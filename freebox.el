@@ -1,49 +1,37 @@
-;;; freebox.el --- Emacs client for FreeBox backend -*- lexical-binding: t; -*-
+;;; freebox.el --- Emacs frontend for FreeBox -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024 lynx
-
-;; Author: lynx
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "27.1") (websocket "1.14") (request "0.3.2"))
-;; Keywords: multimedia, video
+;; Copyright (C) 2026 lynx
+;; Author: lynx <lynx@localhost>
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "28.1") (request "0.3.3") (dash "2.19.1") (transient "0.3.0"))
+;; Keywords: multimedia, video, tools
+;; URL: https://github.com/lynx/freebox.el
 
 ;;; Commentary:
-
-;; An Emacs frontend for FreeBox, a TVBox-compatible video streaming backend.
-;; This package manages the FreeBox local server process and provides a
-;; transient/hydra based UI for searching, browsing, and playing videos via empv.
+;;
+;; FreeBox Emacs Client - A video streaming client for Emacs
+;;
+;; Connects to a FreeBox backend via HTTP REST API to browse, search,
+;; and play video contents using empv/mpv.
+;;
+;; Quick start:
+;;   1. Start FreeBox:  ./FreeBox_*.AppImage --headless
+;;   2. In Emacs:       M-x freebox
+;;
+;; Main entry point:
+;;   M-x freebox          — Open main transient menu
+;;   M-x freebox-search   — Search for videos
+;;   M-x freebox-browse-category — Browse by category
+;;   M-x freebox-select-source   — Choose a source
+;;
 
 ;;; Code:
 
-(require 'cl-lib)
-(require 'json)
-(require 'websocket nil t)
-(require 'request nil t)
-
-(defgroup freebox nil
-  "Emacs client for FreeBox."
-  :group 'multimedia
-  :prefix "freebox-")
-
-(defcustom freebox-jar-path (expand-file-name "~/git/FreeBox/build/libs/FreeBox.jar") ; TODO: update path
-  "Path to the FreeBox backend JAR file."
-  :type 'file
-  :group 'freebox)
-
-(defcustom freebox-ws-port 8081
-  "Port for the FreeBox WebSocket server."
-  :type 'integer
-  :group 'freebox)
-
-(defcustom freebox-http-port 8080
-  "Port for the FreeBox HTTP server."
-  :type 'integer
-  :group 'freebox)
-
-(defcustom freebox-java-executable "java"
-  "Path to the Java executable (requires Java 17+)."
-  :type 'string
-  :group 'freebox)
+(require 'freebox-model)
+(require 'freebox-http)
+(require 'freebox-ui)
+(require 'freebox-empv)
+(require 'freebox-commands)
 
 (provide 'freebox)
 ;;; freebox.el ends here
