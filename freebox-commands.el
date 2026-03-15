@@ -51,7 +51,10 @@
     ("S" "Select source"          freebox-select-source)]
    ["Browse"
     ("s" "Search videos"          freebox-search)
-    ("b" "Browse by category"     freebox-browse-category)]])
+    ("b" "Browse by category"     freebox-browse-category)]
+   ["Server"
+    ("r" "Start server"           freebox-http-start-server)
+    ("q" "Stop server"            freebox-http-stop-server)]])
 
 ;;; ─── Interactive commands ─────────────────────────────────────────────────────
 

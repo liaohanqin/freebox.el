@@ -165,9 +165,11 @@ Selects a client first if none is chosen."
 ;;; ─── Search ───────────────────────────────────────────────────────────────────
 
 (defun freebox-ui-search ()
-  "Search FreeBox for videos. Picks a client/source first if needed."
+  "Search FreeBox for videos. Picks a client/source first if needed.
+Auto-starts the backend if `freebox-http-server-script' is configured."
   (interactive)
-  (freebox-ui--with-source #'freebox-ui--do-search))
+  (freebox-http-ensure-server
+   (lambda () (freebox-ui--with-source #'freebox-ui--do-search))))
 
 (defun freebox-ui--do-search (source-key)
   "Prompt for a keyword and search in SOURCE-KEY."
@@ -201,9 +203,11 @@ Selects a client first if none is chosen."
 ;;; ─── Category browse ──────────────────────────────────────────────────────────
 
 (defun freebox-ui-browse-category ()
-  "Browse FreeBox content by category."
+  "Browse FreeBox content by category.
+Auto-starts the backend if `freebox-http-server-script' is configured."
   (interactive)
-  (freebox-ui--with-source #'freebox-ui--pick-category))
+  (freebox-http-ensure-server
+   (lambda () (freebox-ui--with-source #'freebox-ui--pick-category))))
 
 (defun freebox-ui--pick-category (source-key)
   "Fetch top-level categories for SOURCE-KEY and let user pick one."

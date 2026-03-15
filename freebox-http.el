@@ -139,5 +139,126 @@ CALLBACK is called with (ERROR PLAYINFO)."
       ,@(when client-id `((clientId . ,client-id))))
     callback))
 
+;;; ─── Server management ────────────────────────────────────────────────────
+
+(defcustom freebox-http-server-script nil
+  "Path to the FreeBox jlink launcher script.
+Example: \"/home/USER/git/FreeBox/build/image/bin/FreeBox\"
+When nil, auto-start is disabled and the server must be started manually."
+  :type '(choice (const :tag "Disabled" nil) file)
+  :group 'freebox-http)
+
+(defcustom freebox-http-server-start-timeout 30
+  "Seconds to wait for FreeBox server to become ready after starting."
+  :type 'integer
+  :group 'freebox-http)
+
+(defvar freebox-http--server-process nil
+  "The FreeBox server process managed by Emacs, or nil.")
+
+(defun freebox-http--server-running-p ()
+  "Return t if FreeBox server responds with HTTP 200 at `freebox-http-url'/clients."
+  (condition-case nil
+      (let ((buf (url-retrieve-synchronously
+                  (concat freebox-http-url "/clients") t nil 2)))
+        (when buf
+          (with-current-buffer buf
+            (goto-char (point-min))
+            (prog1
+                (looking-at "HTTP/[0-9.]+ 200")
+              (kill-buffer buf)))))
+    (error nil)))
+
+(defun freebox-http-start-server ()
+  "Start the FreeBox backend in headless mode.
+Requires `freebox-http-server-script' to be set (path to gradlew).
+The process is started in the gradlew directory with `run --args=--headless'.
+Output is collected in the *freebox-server* buffer."
+  (interactive)
+  (unless freebox-http-server-script
+    (user-error "FreeBox: freebox-http-server-script is not configured"))
+  (let* ((script  (expand-file-name freebox-http-server-script))
+         ;; gradlew must be run from the project root directory
+         (default-directory (file-name-directory script)))
+    (unless (file-executable-p script)
+      (user-error "FreeBox: server script not executable: %s" script))
+    (message "FreeBox: starting server (output in *freebox-server*)...")
+    (setq freebox-http--server-process
+          (make-process
+           :name    "freebox-server"
+           :buffer  "*freebox-server*"
+           :command (list script "run" "--args=--headless")
+           :noquery t
+           :sentinel (lambda (_proc event)
+                       (message "FreeBox server: %s" (string-trim event)))))
+    freebox-http--server-process))
+
+(defun freebox-http-stop-server ()
+  "Stop the FreeBox backend process managed by Emacs."
+  (interactive)
+  (if (and freebox-http--server-process
+           (process-live-p freebox-http--server-process))
+      (progn
+        (delete-process freebox-http--server-process)
+        (setq freebox-http--server-process nil)
+        (message "FreeBox: server stopped."))
+    (message "FreeBox: no managed server process running.")))
+
+(defconst freebox-http--server-script-default
+  "~/git/FreeBox/gradlew"
+  "Default path shown when prompting the user to locate the FreeBox launcher script.\nExpected to be the gradlew wrapper; the server is started with --args=\"--headless\".")
+
+(defun freebox-http--prompt-server-script ()
+  "Interactively ask the user for the FreeBox launcher script path.
+Saves the chosen path to `freebox-http-server-script' persistently via
+`customize-save-variable' so the prompt only appears once."
+  (let* ((default (expand-file-name freebox-http--server-script-default))
+         (chosen  (read-file-name
+                   "FreeBox launcher script: "
+                   (file-name-directory default)
+                   default
+                   t
+                   (file-name-nondirectory default))))
+    (when (and chosen (not (string-empty-p chosen)))
+      (customize-save-variable 'freebox-http-server-script chosen)
+      chosen)))
+
+(defun freebox-http-ensure-server (callback)
+  "Ensure FreeBox server is running, then invoke CALLBACK with no args.
+If the server already responds at `freebox-http-url', CALLBACK is called
+immediately (synchronous fast path).
+If `freebox-http-server-script' is nil, prompt the user once to select
+the launcher script path (default: `freebox-http--server-script-default'),
+save the selection persistently, then start the server.
+If the user cancels the prompt, the operation is aborted.
+Otherwise, starts the server process and polls every 2 seconds until the
+server is ready or `freebox-http-server-start-timeout' is exceeded."
+  (if (freebox-http--server-running-p)
+      (funcall callback)
+    ;; Resolve script path: prompt if not yet configured
+    (let ((script (or freebox-http-server-script
+                      (freebox-http--prompt-server-script))))
+      (if (not script)
+          (message "FreeBox: server script not selected, aborting.")
+        ;; Persist chosen path for future sessions
+        (setq freebox-http-server-script script)
+        (freebox-http-start-server)
+        (let* ((deadline (+ (float-time) freebox-http-server-start-timeout))
+               (poll nil))
+          (setq poll
+                (run-with-timer
+                 2 2
+                 (lambda ()
+                   (cond
+                    ((freebox-http--server-running-p)
+                     (cancel-timer poll)
+                     (message "FreeBox: server ready.")
+                     (funcall callback))
+                    ((> (float-time) deadline)
+                     (cancel-timer poll)
+                     (message
+                      "FreeBox: server failed to start within %ds. Check *freebox-server* buffer."
+                      freebox-http-server-start-timeout)))))))))))
+
 (provide 'freebox-http)
 ;;; freebox-http.el ends here
