@@ -66,9 +66,9 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
 (with-eval-after-load 'pretty-hydra
   (pretty-hydra-define freebox-menu
     (:title (format "%s" (freebox--format-menu-title))
-     :color amaranth
+     :color red
      :quit-key "q"
-     :foreign-keys warn)
+     :foreign-keys run)
     ("Configure"
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
@@ -93,9 +93,9 @@ Restores previous menu state and displays current selections in title."
   ;; Re-define the hydra with fresh title (state was just restored above)
   (pretty-hydra-define freebox-menu
     (:title (format "%s" (freebox--format-menu-title))
-     :color amaranth
+     :color red
      :quit-key "q"
-     :foreign-keys warn)
+     :foreign-keys run)
     ("Configure"
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
