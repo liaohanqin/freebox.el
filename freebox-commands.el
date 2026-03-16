@@ -1,62 +1,116 @@
 ;;; freebox-commands.el --- Interactive commands for FreeBox -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; User-facing M-x commands and the main transient menu.
+;; User-facing M-x commands and the main pretty-hydra menu.
 ;;
 ;; Quick start:
 ;;   1. Start FreeBox backend:  ./FreeBox_*.AppImage --headless
-;;   2. M-x freebox            Open main menu
+;;   2. M-x freebox            Open main hydra menu
 ;;      or  C-c v v            (if setup-freebox.el is loaded)
 ;;
 ;; Main menu actions:
-;;   c  freebox-select-client  Change client config (video source JSON)
-;;   S  freebox-select-source  Change current source within client
-;;   s  freebox-search         Search videos
-;;   b  freebox-browse-category  Browse by category
+;;   x  Select client    -- Change client config (video source JSON)
+;;   y  Select source    -- Change current source within client
+;;   z  Select category  -- Select a category within current source
+;;   s  Search videos    -- Full-text search
+;;   v  Browse videos    -- Browse by remembered category
+;;   r  Start server     -- Start FreeBox backend
+;;   k  Stop server      -- Stop managed backend
+;;   q  Quit             -- Close menu
 
 ;;; Code:
 
 (require 'freebox-ui)
-(require 'transient)
+(require 'freebox-http)
 
-;;; ─── Status helpers ──────────────────────────────────────────────────────────
+;;; --- Hydra title helpers -----------------------------------------------------
 
-(defun freebox--client-status ()
-  "Return a string describing the current client config."
+(defun freebox--client-status-short ()
+  "Return short client status string for hydra display."
   (if freebox-ui-current-client-name
-      (propertize
-       (format "[%s]"
-               (truncate-string-to-width freebox-ui-current-client-name 50 nil nil "…"))
-       'face 'font-lock-string-face)
-    (propertize "(none — press c)" 'face 'shadow)))
+      (truncate-string-to-width freebox-ui-current-client-name 30 nil nil "...")
+    "(none)"))
 
-(defun freebox--source-status ()
-  "Return a string describing the current source."
-  (if freebox-ui-current-source
-      (propertize (format "[%s]" freebox-ui-current-source-name)
-                  'face 'font-lock-constant-face)
-    (propertize "(none — press S)" 'face 'shadow)))
+(defun freebox--source-status-short ()
+  "Return short source status string for hydra display."
+  (if freebox-ui-current-source-name
+      freebox-ui-current-source-name
+    "(none)"))
 
-;;; ─── Transient main menu ──────────────────────────────────────────────────────
+(defun freebox--category-status-short ()
+  "Return short category status string for hydra display."
+  (if freebox-ui-current-category-name
+      freebox-ui-current-category-name
+    "(none)"))
 
-(transient-define-prefix freebox ()
-  "FreeBox — Emacs video client."
-  [:description
-   (lambda ()
-     (format "FreeBox\n  client: %s\n  source: %s"
-             (freebox--client-status)
-             (freebox--source-status)))]
-  [["Configure"
-    ("c" "Select client config"   freebox-select-client)
-    ("S" "Select source"          freebox-select-source)]
-   ["Browse"
-    ("s" "Search videos"          freebox-search)
-    ("b" "Browse by category"     freebox-browse-category)]
-   ["Server"
-    ("r" "Start server"           freebox-http-start-server)
-    ("q" "Stop server"            freebox-http-stop-server)]])
+(defun freebox--server-status-string ()
+  "Return server status string for hydra display.
+Checks managed process first (non-blocking), then falls back to HTTP ping."
+  (cond
+   ((and freebox-http--server-process
+         (process-live-p freebox-http--server-process))
+    "Running (managed)")
+   ((freebox-http--server-running-p)
+    "Running (external)")
+   (t "Stopped")))
 
-;;; ─── Interactive commands ─────────────────────────────────────────────────────
+(defun freebox--format-menu-title ()
+  "Format the main menu title with current state."
+  (format "FreeBox - Emacs Video Client\nClient: %s | Source: %s\nServer: %s"
+          (freebox--client-status-short)
+          (freebox--source-status-short)
+          (freebox--server-status-string)))
+
+;;; --- Static hydra definition (loaded once) -----------------------------------
+
+(with-eval-after-load 'pretty-hydra
+  (pretty-hydra-define freebox-menu
+    (:title (format "%s" (freebox--format-menu-title))
+     :color amaranth
+     :quit-key "q"
+     :foreign-keys warn)
+    ("Configure"
+     (("x" freebox-select-client   "Select client")
+      ("y" freebox-select-source   "Select source")
+      ("z" freebox-select-category "Select category"))
+     "Browse"
+     (("s" freebox-search          "Search videos")
+      ("v" freebox-browse-category "Browse videos"))
+     "Server"
+     (("r" freebox-http-start-server "Start server")
+      ("k" freebox-http-stop-server  "Stop server"))
+     "Other"
+     (("?" freebox-help "Help")))))
+
+;;; --- Main entry point --------------------------------------------------------
+
+;;;###autoload
+(defun freebox ()
+  "Open FreeBox main menu (hydra).
+Restores previous menu state and displays current selections in title."
+  (interactive)
+  (freebox-ui-restore-state)
+  ;; Re-define the hydra with fresh title (state was just restored above)
+  (pretty-hydra-define freebox-menu
+    (:title (format "%s" (freebox--format-menu-title))
+     :color amaranth
+     :quit-key "q"
+     :foreign-keys warn)
+    ("Configure"
+     (("x" freebox-select-client   "Select client")
+      ("y" freebox-select-source   "Select source")
+      ("z" freebox-select-category "Select category"))
+     "Browse"
+     (("s" freebox-search          "Search videos")
+      ("v" freebox-browse-category "Browse videos"))
+     "Server"
+     (("r" freebox-http-start-server "Start server")
+      ("k" freebox-http-stop-server  "Stop server"))
+     "Other"
+     (("?" freebox-help "Help"))))
+  (freebox-menu/body))
+
+;;; --- Interactive commands ----------------------------------------------------
 
 ;;;###autoload
 (defun freebox-select-client ()
@@ -65,22 +119,35 @@
   (freebox-ui-select-client))
 
 ;;;###autoload
-(defun freebox-search ()
-  "Search FreeBox for videos."
-  (interactive)
-  (freebox-ui-search))
-
-;;;###autoload
 (defun freebox-select-source ()
   "Select or change the FreeBox source."
   (interactive)
   (freebox-ui-select-source))
 
 ;;;###autoload
+(defun freebox-select-category ()
+  "Select a FreeBox category within the current source."
+  (interactive)
+  (freebox-ui-select-category))
+
+;;;###autoload
+(defun freebox-search ()
+  "Search FreeBox for videos."
+  (interactive)
+  (freebox-ui-search))
+
+;;;###autoload
 (defun freebox-browse-category ()
-  "Browse FreeBox videos by category."
+  "Browse FreeBox videos by (remembered) category."
   (interactive)
   (freebox-ui-browse-category))
+
+;;;###autoload
+(defun freebox-help ()
+  "Show FreeBox keybinding help."
+  (interactive)
+  (message
+   "FreeBox: x=client  y=source  z=category  s=search  v=browse  r=start-server  k=stop-server  q=quit"))
 
 (provide 'freebox-commands)
 ;;; freebox-commands.el ends here
