@@ -125,9 +125,13 @@ ARGS depend on TYPE:
     (when cursor
       (freebox-persist-set-v-cursor cursor))))
 
-(defun freebox-ui--node-level (type-str)
-  "Return numeric level for node TYPE-STR, or 0 if unknown."
-  (or (alist-get (intern (or type-str "")) freebox-ui--node-levels) 0))
+(defun freebox-ui--node-level (type-val)
+  "Return numeric level for node TYPE-VAL (string or symbol), or 0 if unknown."
+  (let ((sym (cond
+              ((symbolp type-val) type-val)
+              ((stringp type-val) (intern type-val))
+              (t nil))))
+    (if sym (or (alist-get sym freebox-ui--node-levels) 0) 0)))
 
 (defun freebox-ui--save-client (id name)
   "Save client selection (ID, NAME) to state and history.
@@ -222,7 +226,7 @@ Returns (KEY . NAME) cons, or nil if cancelled."
   (let* ((cursor (freebox-persist-get-v-cursor))
          (cursor-type (and cursor (alist-get 'type cursor)))
          (cursor-level (freebox-ui--node-level cursor-type)))
-    (when (>= cursor-level (freebox-ui--node-level 'vod-list))
+    (when (>= cursor-level (freebox-ui--node-level "vod-list"))
       (freebox-persist-clear-v-cursor)))
   (freebox-persist-add-history 'categories (vector name tid)))
 
