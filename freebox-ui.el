@@ -8,6 +8,11 @@
 ;;   1. Select client (from /api/clients -- saved CATVOD_SPIDER configs)
 ;;   2. Select source (from /api/sources?clientId=...)
 ;;   3. Browse / search within that source
+;;
+;; C-g behavior:
+;;   At ANY level, C-g cancels the current menu silently.
+;;   v-cursor is NOT updated on C-g -- next v reopens the same position.
+;;   Only actual user selections (not C-g, not "返回上一级") update v-cursor.
 
 ;;; Code:
 
@@ -148,7 +153,7 @@ ARGS depend on TYPE:
 
 (defun freebox-ui--save-client (id name)
   "Save client selection (ID, NAME) to state and history.
-  Clears source, category, and v-cursor since client changed."
+Clears source, category, and v-cursor since client changed."
   (setq freebox-ui-current-client-id   id
         freebox-ui-current-client-name name
         freebox-ui-current-source      nil
@@ -218,7 +223,7 @@ Returns (KEY . NAME) cons, or nil if cancelled."
 
 (defun freebox-ui--save-source (key name)
   "Save source selection (KEY, NAME) to state and history.
-  Clears category and v-cursor since source changed."
+Clears category and v-cursor since source changed."
   (setq freebox-ui-current-source       key
         freebox-ui-current-source-name  name
         freebox-ui-current-category-tid  nil
@@ -232,7 +237,7 @@ Returns (KEY . NAME) cons, or nil if cancelled."
 
 (defun freebox-ui--save-category (tid name)
   "Save category selection (TID, NAME) to state and history.
-  Clears v-cursor if it points to vod-list or deeper (child of category)."
+Clears v-cursor if it points to vod-list or deeper (child of category)."
   (setq freebox-ui-current-category-tid  tid
         freebox-ui-current-category-name name)
   (freebox-persist-set-category-tid tid)
@@ -308,7 +313,6 @@ Auto-starts the backend if `freebox-http-server-script' is configured."
         (lambda (err data)
           (if err
               (freebox-ui--error err)
-            ;; Search result path: data.movie.videoList
             (let* ((movie  (freebox-ui--jget data 'movie))
                    (items  (freebox-ui--vec->list
                             (freebox-ui--jget movie 'videoList)))
@@ -346,9 +350,12 @@ Auto-starts the backend if needed. Saves category selection."
 
 (defun freebox-ui--pick-category (source-key)
   "Fetch top-level categories for SOURCE-KEY and let user pick one.
-Shows a `返回上一级' entry at the top; selecting it goes back to source selection."
-  ;; Record that we're at the category-selection node
-  (freebox-ui--save-v-cursor 'category source-key nil "(selecting)")
+Shows a `返回上一级' entry at the top; selecting it goes back to source selection.
+
+C-g cancels silently: v-cursor is NOT updated, so next v resumes same position.
+Only an actual category selection updates v-cursor."
+  ;; Do NOT update v-cursor here. Only update after the user actually picks.
+  ;; This ensures C-g leaves v-cursor unchanged.
   (freebox-ui--loading "fetching categories")
   (freebox-http-get-categories source-key freebox-ui-current-client-id
     (lambda (err data)
@@ -362,7 +369,6 @@ Shows a `返回上一级' entry at the top; selecting it goes back to source sel
                                                (freebox-ui--jget c 'id))
                                            (freebox-ui--jget c 'id)))
                                    items))
-               ;; Prepend "返回上一级"
                (all-cands  (cons (cons freebox-ui--back-label :back) candidates)))
           (if (not candidates)
               (message "FreeBox: no categories found.")
@@ -371,10 +377,12 @@ Shows a `返回上一级' entry at the top; selecting it goes back to source sel
                    (selected-val (and selected-name
                                       (cdr (assoc selected-name all-cands)))))
               (cond
-               ((or (null selected-val) (eq selected-val :back))
-                ;; Back to source selection
+               ((null selected-val)        nil) ; C-g: cancel, v-cursor unchanged
+               ((eq selected-val :back)
+                ;; Explicit 返回: go back to source selection
                 (freebox-ui--with-client #'freebox-ui--do-select-source))
                (t
+                ;; Real selection: update v-cursor now
                 (freebox-ui--save-category selected-val selected-name)
                 (freebox-ui--save-v-cursor 'category source-key selected-val selected-name)
                 (freebox-ui--category-page source-key selected-val selected-name 1))))))))))
@@ -382,8 +390,10 @@ Shows a `返回上一级' entry at the top; selecting it goes back to source sel
 (defun freebox-ui--category-page (source-key tid cat-name page)
   "Fetch page PAGE of category TID in SOURCE-KEY.
 Records current page as v-cursor for later resumption.
-Shows a `返回上一级' entry that goes back to category selection."
-  ;; Record current position as vod-list node
+Shows a `返回上一级' entry that goes back to category selection.
+
+C-g cancels silently: v-cursor stays at the current page."
+  ;; Record position BEFORE showing the menu, so v-cursor reflects this page.
   (freebox-ui--save-v-cursor 'vod-list source-key tid cat-name page)
   (freebox-ui--loading (format "loading %s p.%d" cat-name page))
   (freebox-http-get-category source-key tid page freebox-ui-current-client-id
@@ -405,7 +415,6 @@ Shows a `返回上一级' entry that goes back to category selection."
                    (next-label (format "-- Next page (p.%d/%d) --" (1+ page) pagecount))
                    (prev-label (format "-- Prev page (p.%d/%d) --" (1- page) pagecount))
                    (all-cands  (append
-                                ;; 返回上一级 always at top
                                 (list (cons freebox-ui--back-label :back))
                                 (when has-prev (list (cons prev-label :prev)))
                                 candidates
@@ -418,7 +427,7 @@ Shows a `返回上一级' entry that goes back to category selection."
                    (selected-val (and selected-name
                                       (cdr (assoc selected-name all-cands)))))
               (cond
-               ((null selected-val)  nil)   ; C-g: do nothing
+               ((null selected-val)      nil) ; C-g: cancel, v-cursor stays at this page
                ((eq selected-val :back)
                 (freebox-ui--pick-category source-key))
                ((eq selected-val :prev)
@@ -443,14 +452,14 @@ Shows a `返回上一级' entry that goes back to category selection."
                (vod (and items (car items))))
           (if (not vod)
               (message "FreeBox: could not load VOD details.")
-            (progn
-              ;; Record vod-detail node so v can resume here
-              (freebox-ui--save-v-cursor 'vod-detail
-                                         freebox-ui-current-source
-                                         vod-id
-                                         (freebox-ui--jget vod 'name))
-              (freebox-ui--show-vod-info vod)
-              (freebox-ui--select-episode vod vod-id))))))))
+            ;; Record vod-detail node BEFORE showing menu, so C-g leaves
+            ;; v-cursor at vod-detail and next v reopens this detail page.
+            (freebox-ui--save-v-cursor 'vod-detail
+                                       freebox-ui-current-source
+                                       vod-id
+                                       (freebox-ui--jget vod 'name))
+            (freebox-ui--show-vod-info vod)
+            (freebox-ui--select-episode vod vod-id)))))))
 
 (defun freebox-ui--show-vod-info (vod)
   "Display brief metadata for VOD in the echo area."
@@ -476,12 +485,10 @@ DIRECT-URL is a fallback if the API fails."
   (freebox-http-get-play-url source-key play-flag episode-url freebox-ui-current-client-id
     (lambda (err pdata)
       (if err
-          ;; Fall back to direct-url on error
           (if direct-url
               (progn (message "FreeBox: playing \"%s\" (direct)" title)
                      (freebox-empv-play-url direct-url title))
             (freebox-ui--error err))
-        ;; play API returns data.nameValuePairs.url
         (let* ((nvp       (freebox-ui--jget pdata 'nameValuePairs))
                (final-url (freebox-ui--jget nvp 'url))
                (url (if (and final-url (stringp final-url)
@@ -498,9 +505,9 @@ DIRECT-URL is a fallback if the API fails."
 Data structure: urlBean.infoList = [{flag, urls}]
 urls = 'ep_name$ep_url#ep_name$ep_url#...'
 
-VOD-ID is the stable parent node id passed from `freebox-ui-show-detail'.
-When resuming from an episode node, v should reopen this vod detail page
-and let the user pick an episode again."
+VOD-ID is the stable id passed from `freebox-ui-show-detail'.
+C-g at any sub-level cancels silently; v-cursor stays at vod-detail
+so next v reopens this detail page."
   (let* ((url-bean  (freebox-ui--jget vod 'urlBean))
          (info-list (freebox-ui--vec->list
                      (freebox-ui--jget url-bean 'infoList)))
@@ -508,27 +515,22 @@ and let the user pick an episode again."
                             info-list)))
     (if (not flags)
         (message "FreeBox: no playable episodes found.")
+      ;; --- Flag selection ---
       (let* ((flags-with-back (cons freebox-ui--back-label flags))
              (selected-flag
               (freebox-ui--completing-read
                (format "Play source (%d available): " (length flags))
                flags-with-back)))
         (cond
-         ((or (null selected-flag)
-              (equal selected-flag freebox-ui--back-label))
-          ;; Back to the vod-list page (restore v-cursor to vod-list level)
-          (let* ((cursor   (freebox-persist-get-v-cursor))
-                 (old-type (and cursor (alist-get 'type cursor))))
-            (if (equal old-type "vod-detail")
-                ;; v-cursor is vod-detail; go back to its parent vod-list
-                (freebox-ui--with-source #'freebox-ui--pick-category)
-              (freebox-ui--with-source #'freebox-ui--pick-category))))
+         ((null selected-flag) nil) ; C-g: cancel, v-cursor stays at vod-detail
+         ((equal selected-flag freebox-ui--back-label)
+          ;; Explicit 返回: go back to vod-list
+          (freebox-ui--with-source #'freebox-ui--pick-category))
          (t
-          ;; Find info item for selected flag
+          ;; --- Episode selection ---
           (let* ((info (cl-find selected-flag info-list
                                 :test #'equal
                                 :key (lambda (i) (freebox-ui--jget i 'flag))))
-                 ;; Parse urls string: each item "ep_name$ep_url", # separated
                  (url-str  (and info (freebox-ui--jget info 'urls)))
                  (ep-parts (and url-str (split-string url-str "#")))
                  (candidates
@@ -539,7 +541,6 @@ and let the user pick an episode again."
                                          (cons (match-string 1 part)
                                                (match-string 2 part))))
                                      ep-parts))))
-                 ;; Prepend back label
                  (cands-with-back (cons (cons freebox-ui--back-label :back) candidates)))
             (if (not candidates)
                 (message "FreeBox: no episodes under [%s]." selected-flag)
@@ -550,12 +551,12 @@ and let the user pick an episode again."
                      (selected-val (and selected-ep
                                         (cdr (assoc selected-ep cands-with-back)))))
                 (cond
-                 ((null selected-val)   nil)  ; C-g: do nothing
+                 ((null selected-val) nil) ; C-g: cancel, v-cursor stays at vod-detail
                  ((eq selected-val :back)
-                  ;; Back to flag selection: re-enter select-episode
+                  ;; Explicit 返回: back to flag selection
                   (freebox-ui--select-episode vod vod-id))
                  (t
-                  ;; Record episode node using the stable vod-id parameter
+                  ;; Real selection: record episode node, then play
                   (freebox-ui--save-v-cursor 'episode
                                              freebox-ui-current-source
                                              vod-id
@@ -586,12 +587,12 @@ Used by transient menus to show [client] [source] indicators."
   "Resume browsing from the last remembered navigation node (v-cursor).
 
 Restores to the deepest valid node recorded:
-  vod-list  -> directly opens the saved category page (e.g. page 3)
-  category  -> if tid is valid: directly enters that category page 1
-               if tid is nil (was mid-selection): re-shows category list
-  vod-detail-> directly opens the vod detail page
-  episode   -> re-opens the parent vod detail (nearest valid parent)
-  nil       -> falls back to full select-source -> category flow
+  vod-list   -> directly opens the saved category page (e.g. page 3)
+  category   -> if tid is valid: directly enters that category page 1
+                if tid is nil (was mid-selection): re-shows category list
+  vod-detail -> directly opens the vod detail page
+  episode    -> re-opens the parent vod detail (nearest valid parent)
+  nil        -> falls back to full select-source -> category flow
 
 If the parent source no longer matches the current source, falls back
 to the nearest valid parent (category -> source -> client)."
@@ -601,11 +602,9 @@ to the nearest valid parent (category -> source -> client)."
      (let* ((cursor   (freebox-persist-get-v-cursor))
             (type     (and cursor (alist-get 'type cursor)))
             (src-key  (and cursor (alist-get 'source-key cursor)))
-            ;; Check if saved source matches current source
             (src-ok   (and freebox-ui-current-source
                            (equal freebox-ui-current-source src-key))))
        (cond
-        ;; vod-list: restore to the exact page in the saved category
         ((equal type "vod-list")
          (let ((tid      (alist-get 'tid cursor))
                (cat-name (alist-get 'cat-name cursor))
@@ -615,8 +614,6 @@ to the nearest valid parent (category -> source -> client)."
              (message "FreeBox: source changed, resuming from category selection.")
              (freebox-ui--with-source #'freebox-ui--pick-category))))
 
-        ;; category with valid tid: directly enter that category (page 1)
-        ;; category with nil tid (was mid-selection): re-show category list
         ((equal type "category")
          (let ((tid  (alist-get 'tid cursor))
                (name (alist-get 'name cursor)))
@@ -629,7 +626,6 @@ to the nearest valid parent (category -> source -> client)."
              (message "FreeBox: source changed, resuming from category selection.")
              (freebox-ui--with-source #'freebox-ui--pick-category))))
 
-        ;; vod-detail: restore to the vod detail page
         ((equal type "vod-detail")
          (let ((vod-id (alist-get 'vod-id cursor)))
            (if (and src-ok vod-id)
@@ -637,7 +633,6 @@ to the nearest valid parent (category -> source -> client)."
              (message "FreeBox: context changed, resuming from category selection.")
              (freebox-ui--with-source #'freebox-ui--pick-category))))
 
-        ;; episode: nearest valid parent is vod-detail -> re-fetch that vod
         ((equal type "episode")
          (let ((vod-id (alist-get 'vod-id cursor)))
            (if (and src-ok vod-id)
@@ -645,7 +640,6 @@ to the nearest valid parent (category -> source -> client)."
              (message "FreeBox: context changed, resuming from category selection.")
              (freebox-ui--with-source #'freebox-ui--pick-category))))
 
-        ;; nil or unknown: full flow from source -> category
         (t
          (freebox-ui--with-source #'freebox-ui--pick-category)))))))
 
