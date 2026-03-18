@@ -414,8 +414,14 @@ Auto-starts the backend if needed. Saves category selection."
                (vod (and items (car items))))
           (if (not vod)
               (message "FreeBox: could not load VOD details.")
-            (freebox-ui--show-vod-info vod)
-            (freebox-ui--select-episode vod vod-id)))))))
+            (progn
+              ;; Record vod-detail node so v can resume here
+              (freebox-ui--save-v-cursor 'vod-detail
+                                         freebox-ui-current-source
+                                         vod-id
+                                         (freebox-ui--jget vod 'name))
+              (freebox-ui--show-vod-info vod)
+              (freebox-ui--select-episode vod vod-id))))))))
 
 (defun freebox-ui--show-vod-info (vod)
   "Display brief metadata for VOD in the echo area."
@@ -497,7 +503,14 @@ urls = 'ep_name$ep_url#ep_name$ep_url#...'"
                    (format "Episode (%d): " (length candidates))
                    candidates nil t))
                  ;; episode URL passed directly as vodId to /api/play
-                 (ep-url (cdr (assoc selected-ep candidates))))
+                 (ep-url (cdr (assoc selected-ep candidates)))
+                 ;; vod-id from the outer vod object
+                 (vod-id (freebox-ui--jget vod 'id)))
+            ;; Record episode node: v will resume from vod-detail (parent)
+            (freebox-ui--save-v-cursor 'episode
+                                       freebox-ui-current-source
+                                       vod-id
+                                       selected-flag)
             (freebox-ui--resolve-and-play
              freebox-ui-current-source selected-flag ep-url
              ep-url selected-ep)))))))
@@ -576,6 +589,16 @@ to the nearest valid parent (category → source → client)."
            (if (and src-ok vod-id)
                (freebox-ui-show-detail vod-id)
              ;; Source mismatch or no vod-id → fall back to category
+             (message "FreeBox: context changed, resuming from category selection.")
+             (freebox-ui--with-source #'freebox-ui--pick-category))))
+
+        ;; episode: nearest valid parent is vod-detail → re-fetch that vod
+        ((equal type "episode")
+         (let ((vod-id (alist-get 'vod-id cursor)))
+           (if (and src-ok vod-id)
+               ;; Re-open the vod detail so user can pick episode again
+               (freebox-ui-show-detail vod-id)
+             ;; Source mismatch → fall back to category
              (message "FreeBox: context changed, resuming from category selection.")
              (freebox-ui--with-source #'freebox-ui--pick-category))))
 
