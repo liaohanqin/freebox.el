@@ -14,6 +14,16 @@
 (require 'freebox-http)
 (require 'freebox-persist)
 
+;;; --- Constants ----------------------------------------------------------------
+
+(defconst freebox-ui--node-levels
+  '((category  . 1)
+    (vod-list  . 2)
+    (vod-detail . 3)
+    (episode   . 4))
+  "Node level numbers for v-cursor hierarchy comparison.
+ Higher numbers are deeper in the tree.")
+
 ;;; --- State -------------------------------------------------------------------
 
 (defvar freebox-ui-current-client-id nil
@@ -85,14 +95,50 @@ Returns (ID . NAME) cons, or nil if cancelled."
     (when (and selected-name (not (string-empty-p selected-name)))
       (cons (cdr (assoc selected-name candidates)) selected-name))))
 
+(defun freebox-ui--save-v-cursor (type &rest args)
+  "Save current navigation node as v-cursor.
+TYPE is one of: category, vod-list, vod-detail, episode.
+ARGS depend on TYPE:
+  category:   (source-key tid name)
+  vod-list:   (source-key tid cat-name page)
+  vod-detail: (source-key vod-id vod-name)
+  episode:    (source-key vod-id flag)"
+  (let ((cursor
+         (pcase type
+           ('category
+            (let ((source-key (nth 0 args)) (tid (nth 1 args)) (name (nth 2 args)))
+              `((type . "category") (source-key . ,source-key)
+                (tid . ,tid) (name . ,name))))
+           ('vod-list
+            (let ((source-key (nth 0 args)) (tid (nth 1 args))
+                  (cat-name (nth 2 args)) (page (nth 3 args)))
+              `((type . "vod-list") (source-key . ,source-key)
+                (tid . ,tid) (cat-name . ,cat-name) (page . ,page))))
+           ('vod-detail
+            (let ((source-key (nth 0 args)) (vod-id (nth 1 args)) (vod-name (nth 2 args)))
+              `((type . "vod-detail") (source-key . ,source-key)
+                (vod-id . ,vod-id) (vod-name . ,vod-name))))
+           ('episode
+            (let ((source-key (nth 0 args)) (vod-id (nth 1 args)) (flag (nth 2 args)))
+              `((type . "episode") (source-key . ,source-key)
+                (vod-id . ,vod-id) (flag . ,flag)))))))
+    (when cursor
+      (freebox-persist-set-v-cursor cursor))))
+
+(defun freebox-ui--node-level (type-str)
+  "Return numeric level for node TYPE-STR, or 0 if unknown."
+  (or (alist-get (intern (or type-str "")) freebox-ui--node-levels) 0))
+
 (defun freebox-ui--save-client (id name)
-  "Save client selection (ID, NAME) to state and history."
+  "Save client selection (ID, NAME) to state and history.
+  Clears source, category, and v-cursor since client changed."
   (setq freebox-ui-current-client-id   id
         freebox-ui-current-client-name name
         freebox-ui-current-source      nil
         freebox-ui-current-source-name nil)
   (freebox-persist-set-client-id id)
   (freebox-persist-set-client-name name)
+  (freebox-persist-clear-v-cursor)
   (freebox-persist-add-history 'clients (vector name id)))
 
 (defun freebox-ui-select-client ()
@@ -153,7 +199,7 @@ Returns (KEY . NAME) cons, or nil if cancelled."
 
 (defun freebox-ui--save-source (key name)
   "Save source selection (KEY, NAME) to state and history.
-  Also clears saved category since source changed."
+  Clears category and v-cursor since source changed."
   (setq freebox-ui-current-source       key
         freebox-ui-current-source-name  name
         freebox-ui-current-category-tid  nil
@@ -162,14 +208,22 @@ Returns (KEY . NAME) cons, or nil if cancelled."
   (freebox-persist-set-source-name name)
   (freebox-persist-set-category-tid nil)
   (freebox-persist-set-category-name nil)
+  (freebox-persist-clear-v-cursor)
   (freebox-persist-add-history 'sources (vector name key)))
 
 (defun freebox-ui--save-category (tid name)
-  "Save category selection (TID, NAME) to state and history."
+  "Save category selection (TID, NAME) to state and history.
+  Clears v-cursor if it points to vod-list or deeper (child of category)."
   (setq freebox-ui-current-category-tid  tid
         freebox-ui-current-category-name name)
   (freebox-persist-set-category-tid tid)
   (freebox-persist-set-category-name name)
+  ;; Invalidate v-cursor if it's at vod-list level or deeper
+  (let* ((cursor (freebox-persist-get-v-cursor))
+         (cursor-type (and cursor (alist-get 'type cursor)))
+         (cursor-level (freebox-ui--node-level cursor-type)))
+    (when (>= cursor-level (freebox-ui--node-level 'vod-list))
+      (freebox-persist-clear-v-cursor)))
   (freebox-persist-add-history 'categories (vector name tid)))
 
 (defun freebox-ui-select-source ()
@@ -269,6 +323,8 @@ Auto-starts the backend if needed. Saves category selection."
 
 (defun freebox-ui--pick-category (source-key)
   "Fetch top-level categories for SOURCE-KEY and let user pick one."
+  ;; Record that we're at the category-selection node
+  (freebox-ui--save-v-cursor 'category source-key nil "(selecting)")
   (freebox-ui--loading "fetching categories")
   (freebox-http-get-categories source-key freebox-ui-current-client-id
     (lambda (err data)
@@ -290,11 +346,16 @@ Auto-starts the backend if needed. Saves category selection."
                    (selected-tid (cdr (assoc selected-name candidates))))
               ;; Save category selection
               (freebox-ui--save-category selected-tid selected-name)
+              ;; Update v-cursor to category node with actual tid
+              (freebox-ui--save-v-cursor 'category source-key selected-tid selected-name)
               (freebox-ui--category-page
                source-key selected-tid selected-name 1))))))))
 
 (defun freebox-ui--category-page (source-key tid cat-name page)
-  "Fetch page PAGE of category TID in SOURCE-KEY."
+  "Fetch page PAGE of category TID in SOURCE-KEY.
+  Records current page as v-cursor for later resumption."
+  ;; Record current position as vod-list node
+  (freebox-ui--save-v-cursor 'vod-list source-key tid cat-name page)
   (freebox-ui--loading (format "loading %s p.%d" cat-name page))
   (freebox-http-get-category source-key tid page freebox-ui-current-client-id
     (lambda (err data)
@@ -452,6 +513,71 @@ Used by transient menus to show [client] [source] indicators."
     (format "%s%s"
             (if client (format "[%s] " client) "")
             (if source (format "[%s]" source) ""))))
+
+;;; --- Resume (v-cursor restore) -----------------------------------------------
+
+(defun freebox-ui-resume ()
+  "Resume browsing from the last remembered navigation node (v-cursor).
+
+Restores to the deepest valid node recorded:
+  vod-list  → directly opens the saved category page (e.g. page 3)
+  category  → if tid is valid: directly enters that category page 1
+              if tid is nil (was mid-selection): re-shows category list
+  vod-detail→ directly opens the vod detail page
+  nil       → falls back to full select-source → category flow
+
+If the parent source no longer matches the current source, falls back
+to the nearest valid parent (category → source → client)."
+  (interactive)
+  (freebox-http-ensure-server
+   (lambda ()
+     (let* ((cursor   (freebox-persist-get-v-cursor))
+            (type     (and cursor (alist-get 'type cursor)))
+            (src-key  (and cursor (alist-get 'source-key cursor)))
+            ;; Check if saved source matches current source
+            (src-ok   (and freebox-ui-current-source
+                           (equal freebox-ui-current-source src-key))))
+       (cond
+        ;; vod-list: restore to the exact page in the saved category
+        ((equal type "vod-list")
+         (let ((tid      (alist-get 'tid cursor))
+               (cat-name (alist-get 'cat-name cursor))
+               (page     (or (alist-get 'page cursor) 1)))
+           (if src-ok
+               (freebox-ui--category-page freebox-ui-current-source tid cat-name page)
+             ;; Source mismatch → fall back to category selection
+             (message "FreeBox: source changed, resuming from category selection.")
+             (freebox-ui--with-source #'freebox-ui--pick-category))))
+
+        ;; category with valid tid: directly enter that category (page 1)
+        ;; category with nil tid (was mid-selection): re-show category list
+        ((equal type "category")
+         (let ((tid  (alist-get 'tid cursor))
+               (name (alist-get 'name cursor)))
+           (if src-ok
+               (if (and tid (not (equal tid "nil")) (not (string-empty-p (or tid ""))))
+                   ;; Valid tid saved: go directly to page 1 of that category
+                   (progn
+                     (freebox-ui--save-category tid name)
+                     (freebox-ui--category-page freebox-ui-current-source tid name 1))
+                 ;; No valid tid: re-show category selection list
+                 (freebox-ui--pick-category freebox-ui-current-source))
+             ;; Source mismatch → fall back to category selection
+             (message "FreeBox: source changed, resuming from category selection.")
+             (freebox-ui--with-source #'freebox-ui--pick-category))))
+
+        ;; vod-detail: restore to the vod detail page
+        ((equal type "vod-detail")
+         (let ((vod-id (alist-get 'vod-id cursor)))
+           (if (and src-ok vod-id)
+               (freebox-ui-show-detail vod-id)
+             ;; Source mismatch or no vod-id → fall back to category
+             (message "FreeBox: context changed, resuming from category selection.")
+             (freebox-ui--with-source #'freebox-ui--pick-category))))
+
+        ;; nil or unknown: full flow from source → category
+        (t
+         (freebox-ui--with-source #'freebox-ui--pick-category)))))))
 
 (provide 'freebox-ui)
 ;;; freebox-ui.el ends here

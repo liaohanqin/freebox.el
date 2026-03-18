@@ -195,6 +195,32 @@ Returns a list of [display-name, id-or-key] pairs in most-recent-first order."
         (append cat-list nil)
       nil)))
 
+;;; ─── V-Cursor (Current Navigation Node) ────────────────────────────────────────
+;;
+;; v-cursor 记录用户当前停留的最深导航节点，供 v 键恢复使用。
+;; 格式为 alist，类型字段 `type' 可为：
+;;   category  → 已进入分类选择
+;;   vod-list  → 正在浏览分类的第 N 页影片列表
+;;   vod-detail→ 正在查看影片详情
+;;   episode   → 正在选集
+;;
+;; 示例：
+;;   ((type . "vod-list") (source-key . "xxx") (tid . "1") (cat-name . "电影") (page . 3))
+
+(defun freebox-persist-get-v-cursor ()
+  "Get the persisted v-cursor navigation node.
+Returns an alist with at least a `type' key, or nil if not set."
+  (freebox-persist-get 'v-cursor))
+
+(defun freebox-persist-set-v-cursor (cursor-alist)
+  "Set the v-cursor navigation node to CURSOR-ALIST.
+CURSOR-ALIST should contain at least `type' and `source-key' keys."
+  (freebox-persist-set 'v-cursor cursor-alist))
+
+(defun freebox-persist-clear-v-cursor ()
+  "Clear the persisted v-cursor navigation node."
+  (freebox-persist-set 'v-cursor nil))
+
 ;;; ─── Convenience Helpers ────────────────────────────────────────────────────────
 
 (defun freebox-persist-get-client-id ()

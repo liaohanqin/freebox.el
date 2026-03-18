@@ -13,7 +13,7 @@
 ;;   y  Select source    -- Change current source within client
 ;;   z  Select category  -- Select a category within current source
 ;;   s  Search videos    -- Full-text search
-;;   v  Browse videos    -- Browse by remembered category
+;;   v  Resume last pos  -- Resume from last remembered navigation node
 ;;   r  Start server     -- Start FreeBox backend
 ;;   k  Stop server      -- Stop managed backend
 ;;   q  Quit             -- Close menu
@@ -74,8 +74,8 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
       ("y" freebox-select-source   "Select source")
       ("z" freebox-select-category "Select category"))
      "Browse"
-     (("s" freebox-search          "Search videos")
-      ("v" freebox-browse-category "Browse videos"))
+     (("s" freebox-search  "Search videos")
+      ("v" freebox-resume  "Resume last pos"))
      "Server"
      (("r" freebox-http-start-server "Start server")
       ("k" freebox-http-stop-server  "Stop server"))
@@ -101,8 +101,8 @@ Restores previous menu state and displays current selections in title."
       ("y" freebox-select-source   "Select source")
       ("z" freebox-select-category "Select category"))
      "Browse"
-     (("s" freebox-search          "Search videos")
-      ("v" freebox-browse-category "Browse videos"))
+     (("s" freebox-search  "Search videos")
+      ("v" freebox-resume  "Resume last pos"))
      "Server"
      (("r" freebox-http-start-server "Start server")
       ("k" freebox-http-stop-server  "Stop server"))
@@ -143,11 +143,18 @@ Restores previous menu state and displays current selections in title."
   (freebox-ui-browse-category))
 
 ;;;###autoload
+(defun freebox-resume ()
+  "Resume browsing from the last remembered navigation position.
+Restores to the deepest saved node: vod-list page, category, or source selection."
+  (interactive)
+  (freebox-ui-resume))
+
+;;;###autoload
 (defun freebox-help ()
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  s=search  v=browse  r=start-server  k=stop-server  q=quit"))
+   "FreeBox: x=client  y=source  z=category  s=search  v=resume-last  r=start-server  k=stop-server  q=quit"))
 
 (provide 'freebox-commands)
 ;;; freebox-commands.el ends here
