@@ -135,6 +135,7 @@ immediately with the cached path."
 
 (declare-function freebox-ui--select-episode "freebox-ui")
 (declare-function freebox-ui--jget "freebox-ui")
+(declare-function hydra-keyboard-quit "hydra")
 
 (defvar freebox-image-mode-map
   (let ((map (make-sparse-keymap)))
@@ -167,6 +168,9 @@ immediately with the cached path."
   "Show poster preview buffer for VOD with VOD-ID.
 PIC-URL is the poster image URL.  Text metadata is shown immediately;
 the image is loaded asynchronously and inserted when ready."
+  ;; Dismiss hydra if active
+  (when (bound-and-true-p hydra-curr-map)
+    (hydra-keyboard-quit))
   (let ((buf (get-buffer-create freebox-image-buffer-name)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
@@ -372,6 +376,9 @@ CAT-NAME, PAGE, PAGECOUNT describe the current category page.
 SOURCE-KEY and TID are saved for context.
 Thumbnails are arranged in a grid, with multiple posters per row.
 Each cell shows the poster above its truncated title."
+  ;; Dismiss hydra if active, so its keybindings don't shadow gallery keys
+  (when (bound-and-true-p hydra-curr-map)
+    (hydra-keyboard-quit))
   (let ((buf (get-buffer-create freebox-image-gallery-buffer-name)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
