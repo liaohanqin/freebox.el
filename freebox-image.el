@@ -156,11 +156,10 @@ immediately with the cached path."
   (setq-local word-wrap t))
 
 (defun freebox-image-select-episode ()
-  "Close poster preview and enter episode selection."
+  "Enter episode selection, keeping the poster buffer visible."
   (interactive)
   (let ((vod freebox-image--vod)
         (vod-id freebox-image--vod-id))
-    (quit-window t)
     (when (and vod vod-id)
       (freebox-ui--select-episode vod vod-id))))
 
