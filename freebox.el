@@ -28,6 +28,7 @@
 ;;; Code:
 
 (require 'freebox-persist)
+(require 'freebox-image)
 (require 'freebox-model)
 (require 'freebox-http)
 (require 'freebox-ui)

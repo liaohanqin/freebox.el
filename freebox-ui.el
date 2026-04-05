@@ -18,6 +18,7 @@
 
 (require 'freebox-http)
 (require 'freebox-persist)
+(require 'freebox-image)
 
 ;;; --- Constants ----------------------------------------------------------------
 
@@ -317,8 +318,13 @@ Auto-starts the backend if `freebox-http-server-script' is configured."
                    (items  (freebox-ui--vec->list
                             (freebox-ui--jget movie 'videoList)))
                    (candidates (mapcar (lambda (v)
-                                         (cons (freebox-ui--jget v 'name)
-                                               (freebox-ui--jget v 'id)))
+                                         (let* ((name (freebox-ui--jget v 'name))
+                                                (pic  (freebox-ui--jget v 'pic))
+                                                (label (if (and pic (stringp pic)
+                                                                (not (string-empty-p pic)))
+                                                           (concat name " [*]")
+                                                         name)))
+                                           (cons label (freebox-ui--jget v 'id))))
                                        items)))
               (if (not candidates)
                   (message "FreeBox: no results for \"%s\"." keyword)
@@ -405,18 +411,31 @@ C-g cancels silently: v-cursor stays at the current page."
                (items      (freebox-ui--vec->list
                             (freebox-ui--jget movie 'videoList)))
                (candidates (mapcar (lambda (v)
-                                     (cons (freebox-ui--jget v 'name)
-                                           (freebox-ui--jget v 'id)))
+                                     (let* ((name (freebox-ui--jget v 'name))
+                                            (pic  (freebox-ui--jget v 'pic))
+                                            (label (if (and pic (stringp pic)
+                                                            (not (string-empty-p pic)))
+                                                       (concat name " [*]")
+                                                     name)))
+                                       (cons label (freebox-ui--jget v 'id))))
                                    items)))
+          ;; Preload poster images in background
+          (dolist (v items)
+            (let ((pic (freebox-ui--jget v 'pic)))
+              (when (and pic (stringp pic) (not (string-empty-p pic)))
+                (freebox-image-get pic #'ignore))))
           (if (not candidates)
               (message "FreeBox: no content in [%s] p.%d." cat-name page)
             (let* ((has-next   (< page pagecount))
                    (has-prev   (> page 1))
                    (next-label (format "-- Next page (p.%d/%d) --" (1+ page) pagecount))
                    (prev-label (format "-- Prev page (p.%d/%d) --" (1- page) pagecount))
+                   (gallery-label (format "-- 查看海报集 (p.%d, %d项) --" page (length candidates)))
                    (all-cands  (append
                                 (list (cons freebox-ui--back-label :back))
                                 (when has-prev (list (cons prev-label :prev)))
+                                (when (display-images-p)
+                                  (list (cons gallery-label :gallery)))
                                 candidates
                                 (when has-next (list (cons next-label :next)))))
                    (selected-name
@@ -434,8 +453,34 @@ C-g cancels silently: v-cursor stays at the current page."
                 (freebox-ui--category-page source-key tid cat-name (1- page)))
                ((eq selected-val :next)
                 (freebox-ui--category-page source-key tid cat-name (1+ page)))
+               ((eq selected-val :gallery)
+                (freebox-image-show-gallery
+                 items cat-name page pagecount source-key tid))
                (t
                 (freebox-ui-show-detail selected-val))))))))))
+
+(defun freebox-ui--category-page-gallery (source-key tid cat-name page)
+  "Like `freebox-ui--category-page' but opens gallery view directly.
+Used by gallery M-n/M-p page navigation."
+  (freebox-ui--save-v-cursor 'vod-list source-key tid cat-name page)
+  (freebox-ui--loading (format "loading %s p.%d (gallery)" cat-name page))
+  (freebox-http-get-category source-key tid page freebox-ui-current-client-id
+    (lambda (err data)
+      (if err
+          (freebox-ui--error err)
+        (let* ((movie     (freebox-ui--jget data 'movie))
+               (pagecount (or (freebox-ui--jget movie 'pagecount) 9999))
+               (items     (freebox-ui--vec->list
+                           (freebox-ui--jget movie 'videoList))))
+          (if (not items)
+              (message "FreeBox: no content in [%s] p.%d." cat-name page)
+            ;; Preload posters
+            (dolist (v items)
+              (let ((pic (freebox-ui--jget v 'pic)))
+                (when (and pic (stringp pic) (not (string-empty-p pic)))
+                  (freebox-image-get pic #'ignore))))
+            (freebox-image-show-gallery
+             items cat-name page pagecount source-key tid)))))))
 
 ;;; --- VOD detail & episode selection ------------------------------------------
 
@@ -458,8 +503,14 @@ C-g cancels silently: v-cursor stays at the current page."
                                        freebox-ui-current-source
                                        vod-id
                                        (freebox-ui--jget vod 'name))
-            (freebox-ui--show-vod-info vod)
-            (freebox-ui--select-episode vod vod-id)))))))
+            (let ((pic (freebox-ui--jget vod 'pic)))
+              (if (and pic (stringp pic) (not (string-empty-p pic))
+                       (display-images-p))
+                  ;; Show poster preview buffer; episode selection via RET/p
+                  (freebox-image-show-poster vod vod-id pic)
+                ;; No poster or terminal: original text-only flow
+                (freebox-ui--show-vod-info vod)
+                (freebox-ui--select-episode vod vod-id)))))))))
 
 (defun freebox-ui--show-vod-info (vod)
   "Display brief metadata for VOD in the echo area."
