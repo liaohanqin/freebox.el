@@ -425,23 +425,22 @@ ROW-ITEMS is a list of VOD alists.  NAME-CHARS is the max name width in chars."
     (let ((inhibit-read-only t))
       (save-excursion
         (goto-char marker)
-        ;; Find and delete the placeholder text on this line
-        (let ((line-end (line-end-position)))
-          (when (and (<= marker line-end)
-                     (get-text-property marker 'freebox-vod-id))
-            (delete-region marker line-end)
-            (condition-case nil
-                (let ((img (create-image path nil nil
-                                         :max-width freebox-image-thumbnail-width
-                                         :max-height freebox-image-thumbnail-height
-                                         :ascent 'center)))
-                  (let ((start (point)))
-                    (insert-image img "[poster]")
-                    (put-text-property start (point) 'freebox-vod-id vod-id)))
-              (error
-               (let ((start (point)))
-                 (insert (propertize "[no image]" 'face 'font-lock-warning-face))
-                 (put-text-property start (point) 'freebox-vod-id vod-id))))))))))
-
+        (when (get-text-property marker 'freebox-vod-id)
+          ;; Delete only the placeholder region, not the whole line
+          (let ((end (next-single-property-change marker 'freebox-vod-id
+                                                  nil (line-end-position))))
+            (delete-region marker end))
+          (condition-case nil
+              (let ((img (create-image path nil nil
+                                       :max-width freebox-image-thumbnail-width
+                                       :max-height freebox-image-thumbnail-height
+                                       :ascent 'center)))
+                (let ((start (point)))
+                  (insert-image img "[poster]")
+                  (put-text-property start (point) 'freebox-vod-id vod-id)))
+            (error
+             (let ((start (point)))
+               (insert (propertize "[no image]" 'face 'font-lock-warning-face))
+               (put-text-property start (point) 'freebox-vod-id vod-id)))))))))
 (provide 'freebox-image)
 ;;; freebox-image.el ends here
