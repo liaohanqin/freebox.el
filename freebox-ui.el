@@ -459,6 +459,29 @@ C-g cancels silently: v-cursor stays at the current page."
                (t
                 (freebox-ui-show-detail selected-val))))))))))
 
+(defun freebox-ui--category-page-gallery (source-key tid cat-name page)
+  "Like `freebox-ui--category-page' but opens gallery view directly.
+Used by gallery M-n/M-p page navigation."
+  (freebox-ui--save-v-cursor 'vod-list source-key tid cat-name page)
+  (freebox-ui--loading (format "loading %s p.%d (gallery)" cat-name page))
+  (freebox-http-get-category source-key tid page freebox-ui-current-client-id
+    (lambda (err data)
+      (if err
+          (freebox-ui--error err)
+        (let* ((movie     (freebox-ui--jget data 'movie))
+               (pagecount (or (freebox-ui--jget movie 'pagecount) 9999))
+               (items     (freebox-ui--vec->list
+                           (freebox-ui--jget movie 'videoList))))
+          (if (not items)
+              (message "FreeBox: no content in [%s] p.%d." cat-name page)
+            ;; Preload posters
+            (dolist (v items)
+              (let ((pic (freebox-ui--jget v 'pic)))
+                (when (and pic (stringp pic) (not (string-empty-p pic)))
+                  (freebox-image-get pic #'ignore))))
+            (freebox-image-show-gallery
+             items cat-name page pagecount source-key tid)))))))
+
 ;;; --- VOD detail & episode selection ------------------------------------------
 
 (defun freebox-ui-show-detail (vod-id)

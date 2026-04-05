@@ -267,17 +267,22 @@ the image is loaded asynchronously and inserted when ready."
 (defvar-local freebox-image--gallery-tid nil)
 (defvar-local freebox-image--gallery-cat-name nil)
 (defvar-local freebox-image--gallery-page nil)
+(defvar-local freebox-image--gallery-pagecount nil)
 
 (declare-function freebox-ui-show-detail "freebox-ui")
+(declare-function freebox-ui--category-page "freebox-ui")
+(declare-function freebox-ui--category-page-gallery "freebox-ui")
 
 (defvar freebox-gallery-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET")       #'freebox-gallery-open-detail)
-    (define-key map (kbd "n")         #'freebox-gallery-next)
-    (define-key map (kbd "p")         #'freebox-gallery-prev)
+    (define-key map (kbd "j")         #'freebox-gallery-next)
+    (define-key map (kbd "k")         #'freebox-gallery-prev)
     (define-key map (kbd "TAB")       #'freebox-gallery-next)
     (define-key map (kbd "<backtab>") #'freebox-gallery-prev)
+    (define-key map (kbd "n")         #'freebox-gallery-next-page)
+    (define-key map (kbd "p")         #'freebox-gallery-prev-page)
     map)
   "Keymap for `freebox-gallery-mode'.")
 
@@ -287,6 +292,8 @@ the image is loaded asynchronously and inserted when ready."
 \\[freebox-gallery-open-detail] - Open VOD detail
 \\[freebox-gallery-next] - Next poster
 \\[freebox-gallery-prev] - Previous poster
+\\[freebox-gallery-next-page] - Next page
+\\[freebox-gallery-prev-page] - Previous page
 \\[quit-window] - Close gallery"
   :group 'freebox-image
   (setq-local cursor-type 'box)
@@ -296,10 +303,8 @@ the image is loaded asynchronously and inserted when ready."
   "Move to the next poster in the gallery."
   (interactive)
   (let ((pos (point)))
-    ;; If currently on a vod-id region, move past it
     (when (get-text-property pos 'freebox-vod-id)
       (setq pos (or (next-single-property-change pos 'freebox-vod-id) pos)))
-    ;; Now find the next region that has vod-id
     (while (and pos (< pos (point-max))
                 (not (get-text-property pos 'freebox-vod-id)))
       (setq pos (next-single-property-change pos 'freebox-vod-id)))
@@ -310,19 +315,14 @@ the image is loaded asynchronously and inserted when ready."
   "Move to the previous poster in the gallery."
   (interactive)
   (let ((pos (point)))
-    ;; If currently on a vod-id region, move before it
     (when (and (> pos (point-min))
                (get-text-property pos 'freebox-vod-id)
                (get-text-property (1- pos) 'freebox-vod-id))
-      ;; Still in the same region, find its start
       (setq pos (previous-single-property-change pos 'freebox-vod-id))
       (setq pos (or pos (point-min))))
-    ;; Move before current position
     (when (> pos (point-min))
       (setq pos (previous-single-property-change pos 'freebox-vod-id))
       (when pos
-        ;; pos is now end of previous region or start of gap
-        ;; Find the start of the vod-id region containing or before pos
         (if (get-text-property (max (1- pos) (point-min)) 'freebox-vod-id)
             (let ((start (previous-single-property-change pos 'freebox-vod-id)))
               (goto-char (or start (point-min))))
@@ -337,11 +337,41 @@ the image is loaded asynchronously and inserted when ready."
       (quit-window t)
       (freebox-ui-show-detail vod-id))))
 
+(defun freebox-gallery-next-page ()
+  "Load the next page in gallery view."
+  (interactive)
+  (let ((page freebox-image--gallery-page)
+        (pagecount freebox-image--gallery-pagecount)
+        (source-key freebox-image--gallery-source-key)
+        (tid freebox-image--gallery-tid)
+        (cat-name freebox-image--gallery-cat-name))
+    (if (and page pagecount (< page pagecount))
+        (progn
+          (quit-window t)
+          (freebox-ui--category-page-gallery
+           source-key tid cat-name (1+ page)))
+      (message "FreeBox: already at last page."))))
+
+(defun freebox-gallery-prev-page ()
+  "Load the previous page in gallery view."
+  (interactive)
+  (let ((page freebox-image--gallery-page)
+        (source-key freebox-image--gallery-source-key)
+        (tid freebox-image--gallery-tid)
+        (cat-name freebox-image--gallery-cat-name))
+    (if (and page (> page 1))
+        (progn
+          (quit-window t)
+          (freebox-ui--category-page-gallery
+           source-key tid cat-name (1- page)))
+      (message "FreeBox: already at first page."))))
+
 (defun freebox-image-show-gallery (items cat-name page pagecount source-key tid)
   "Show a gallery buffer with poster thumbnails for ITEMS.
 CAT-NAME, PAGE, PAGECOUNT describe the current category page.
 SOURCE-KEY and TID are saved for context.
-Thumbnails are arranged in a grid, with multiple posters per row."
+Thumbnails are arranged in a grid, with multiple posters per row.
+Each cell shows the poster above its truncated title."
   (let ((buf (get-buffer-create freebox-image-gallery-buffer-name)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
@@ -350,35 +380,33 @@ Thumbnails are arranged in a grid, with multiple posters per row."
         (setq freebox-image--gallery-source-key source-key
               freebox-image--gallery-tid tid
               freebox-image--gallery-cat-name cat-name
-              freebox-image--gallery-page page)
+              freebox-image--gallery-page page
+              freebox-image--gallery-pagecount pagecount)
         ;; Title
         (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
                                     cat-name page pagecount (length items))
                             'face '(:weight bold :height 1.2)))
         ;; Calculate columns per row
-        (let* ((cell-w (+ freebox-image-thumbnail-width 16))
-               (win-w (or (and (get-buffer-window buf)
-                               (window-body-width (get-buffer-window buf) t))
-                          800))
-               (cols (max 1 (floor (/ (float win-w) cell-w))))
-               (name-chars (max 8 (/ freebox-image-thumbnail-width 8)))
-               (col-idx 0))
-          ;; Render items in grid: image row then name row per grid-row
-          (let ((row-items nil))
-            (dolist (v items)
-              (push v row-items)
-              (cl-incf col-idx)
-              (when (= col-idx cols)
-                (freebox-image--gallery-insert-row buf (nreverse row-items) name-chars)
-                (setq row-items nil col-idx 0)))
-            ;; Remaining items in last partial row
-            (when row-items
-              (freebox-image--gallery-insert-row buf (nreverse row-items) name-chars))))
+        (let* ((cell-px (+ freebox-image-thumbnail-width 16))
+               (win-px (or (and (get-buffer-window buf)
+                                (window-body-width (get-buffer-window buf) t))
+                           800))
+               (cols (max 1 (floor (/ (float win-px) cell-px))))
+               (col-idx 0)
+               (row-items nil))
+          (dolist (v items)
+            (push (cons col-idx v) row-items)
+            (cl-incf col-idx)
+            (when (= col-idx cols)
+              (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
+              (setq row-items nil col-idx 0)))
+          (when row-items
+            (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)))
         ;; Footer
         (insert "\n"
                 (propertize (make-string 50 ?─) 'face 'shadow)
                 "\n"
-                (propertize "[RET] 查看详情  [n/p] 下/上一项  [q] 返回列表"
+                (propertize "[RET] 查看详情  [j/k] 下/上一项  [n/p] 下/上一页  [q] 返回"
                             'face 'font-lock-comment-face)
                 "\n")
         ;; Move to first poster
@@ -387,60 +415,52 @@ Thumbnails are arranged in a grid, with multiple posters per row."
           (when first (goto-char first)))))
     (pop-to-buffer buf '((display-buffer-same-window)))))
 
-(defun freebox-image--gallery-insert-row (buf row-items name-chars)
-  "Insert one grid row into BUF: a line of thumbnails then a line of names.
-ROW-ITEMS is a list of VOD alists.  NAME-CHARS is the max name width in chars."
-  (let ((sep "  "))
-    ;; Image line: placeholders for each item
-    (dolist (v row-items)
-      (let* ((vod-id (freebox-ui--jget v 'id))
+(defun freebox-image--gallery-insert-row (_buf indexed-items cell-px)
+  "Insert one grid row: poster line then name line, pixel-aligned.
+INDEXED-ITEMS is a list of (IDX . VOD-ALIST) conses.
+CELL-PX is the cell width in pixels.
+Images are inserted synchronously from cache; uncached items show text."
+  (let ((name-chars (max 6 (/ (- cell-px 16) 8)))
+        (col 0))
+    ;; Poster line
+    (dolist (entry indexed-items)
+      (let* ((v      (cdr entry))
+             (vod-id (freebox-ui--jget v 'id))
              (pic    (freebox-ui--jget v 'pic))
-             (marker (point-marker)))
+             (px-offset (* col cell-px))
+             (cache-path (and pic (stringp pic) (not (string-empty-p pic))
+                              (freebox-image--cache-path pic)))
+             (cached (and cache-path (freebox-image--cache-fresh-p cache-path))))
+        ;; Pixel-align to column
+        (when (> col 0)
+          (insert (propertize " " 'display `(space :align-to (,px-offset)))))
         (let ((start (point)))
-          (insert (propertize "[loading...]"
-                              'face 'shadow
-                              'freebox-vod-id vod-id))
-          (put-text-property start (point) 'freebox-vod-id vod-id))
-        (insert sep)
-        ;; Async load thumbnail
-        (when (and pic (stringp pic) (not (string-empty-p pic)))
-          (let ((m marker) (b buf) (vid vod-id))
-            (freebox-image-get
-             pic
-             (lambda (path)
-               (when (and path (buffer-live-p b))
-                 (freebox-image--gallery-replace-placeholder b m path vid))))))))
+          (if cached
+              ;; Insert image directly from cache
+              (condition-case nil
+                  (let ((img (create-image cache-path nil nil
+                                           :max-width freebox-image-thumbnail-width
+                                           :max-height freebox-image-thumbnail-height
+                                           :ascent 'center)))
+                    (insert-image img "[poster]"))
+                (error (insert "[no image]")))
+            ;; No cache: show text placeholder
+            (insert (propertize "[no image]" 'face 'shadow)))
+          (put-text-property start (point) 'freebox-vod-id vod-id)))
+      (cl-incf col))
     (insert "\n")
-    ;; Name line: truncated names aligned under each thumbnail
-    (dolist (v row-items)
-      (let* ((name (or (freebox-ui--jget v 'name) "?"))
-             (label (truncate-string-to-width name name-chars nil nil "..")))
-        (insert (propertize (format (format "%%-%ds" (+ name-chars 2)) label)
-                            'face 'font-lock-keyword-face))))
+    ;; Name line (pixel-aligned under each poster)
+    (setq col 0)
+    (dolist (entry indexed-items)
+      (let* ((v (cdr entry))
+             (name (or (freebox-ui--jget v 'name) "?"))
+             (label (truncate-string-to-width name name-chars nil nil ".."))
+             (px-offset (* col cell-px)))
+        (when (> col 0)
+          (insert (propertize " " 'display `(space :align-to (,px-offset)))))
+        (insert (propertize label 'face 'font-lock-keyword-face)))
+      (cl-incf col))
     (insert "\n\n")))
 
-(defun freebox-image--gallery-replace-placeholder (buf marker path vod-id)
-  "In BUF, replace the placeholder at MARKER with a thumbnail image from PATH."
-  (with-current-buffer buf
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char marker)
-        (when (get-text-property marker 'freebox-vod-id)
-          ;; Delete only the placeholder region, not the whole line
-          (let ((end (next-single-property-change marker 'freebox-vod-id
-                                                  nil (line-end-position))))
-            (delete-region marker end))
-          (condition-case nil
-              (let ((img (create-image path nil nil
-                                       :max-width freebox-image-thumbnail-width
-                                       :max-height freebox-image-thumbnail-height
-                                       :ascent 'center)))
-                (let ((start (point)))
-                  (insert-image img "[poster]")
-                  (put-text-property start (point) 'freebox-vod-id vod-id)))
-            (error
-             (let ((start (point)))
-               (insert (propertize "[no image]" 'face 'font-lock-warning-face))
-               (put-text-property start (point) 'freebox-vod-id vod-id)))))))))
 (provide 'freebox-image)
 ;;; freebox-image.el ends here
