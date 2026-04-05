@@ -340,7 +340,8 @@ the image is loaded asynchronously and inserted when ready."
 (defun freebox-image-show-gallery (items cat-name page pagecount source-key tid)
   "Show a gallery buffer with poster thumbnails for ITEMS.
 CAT-NAME, PAGE, PAGECOUNT describe the current category page.
-SOURCE-KEY and TID are saved for context."
+SOURCE-KEY and TID are saved for context.
+Thumbnails are arranged in a grid, with multiple posters per row."
   (let ((buf (get-buffer-create freebox-image-gallery-buffer-name)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
@@ -354,36 +355,28 @@ SOURCE-KEY and TID are saved for context."
         (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
                                     cat-name page pagecount (length items))
                             'face '(:weight bold :height 1.2)))
-        ;; Thumbnails
-        (let ((col 0)
-              (cell-w (+ freebox-image-thumbnail-width 20)))
-          (dolist (v items)
-            (let* ((vod-id (freebox-ui--jget v 'id))
-                   (name   (freebox-ui--jget v 'name))
-                   (pic    (freebox-ui--jget v 'pic))
-                   (marker (point-marker))
-                   (label  (truncate-string-to-width (or name "?") 14 nil nil "..")))
-              ;; Insert placeholder with vod-id property
-              (let ((start (point)))
-                (insert (propertize "[loading...]"
-                                    'face 'shadow
-                                    'freebox-vod-id vod-id))
-                (put-text-property start (point) 'freebox-vod-id vod-id))
-              (insert "\n"
-                      (propertize label 'face 'font-lock-keyword-face)
-                      "\n\n")
-              (cl-incf col cell-w)
-              ;; Async load thumbnail
-              (when (and pic (stringp pic) (not (string-empty-p pic)))
-                (let ((m marker) (b buf) (vid vod-id))
-                  (freebox-image-get
-                   pic
-                   (lambda (path)
-                     (when (and path (buffer-live-p b))
-                       (freebox-image--gallery-replace-placeholder
-                        b m path vid)))))))))
+        ;; Calculate columns per row
+        (let* ((cell-w (+ freebox-image-thumbnail-width 16))
+               (win-w (or (and (get-buffer-window buf)
+                               (window-body-width (get-buffer-window buf) t))
+                          800))
+               (cols (max 1 (floor (/ (float win-w) cell-w))))
+               (name-chars (max 8 (/ freebox-image-thumbnail-width 8)))
+               (col-idx 0))
+          ;; Render items in grid: image row then name row per grid-row
+          (let ((row-items nil))
+            (dolist (v items)
+              (push v row-items)
+              (cl-incf col-idx)
+              (when (= col-idx cols)
+                (freebox-image--gallery-insert-row buf (nreverse row-items) name-chars)
+                (setq row-items nil col-idx 0)))
+            ;; Remaining items in last partial row
+            (when row-items
+              (freebox-image--gallery-insert-row buf (nreverse row-items) name-chars))))
         ;; Footer
-        (insert (propertize (make-string 50 ?─) 'face 'shadow)
+        (insert "\n"
+                (propertize (make-string 50 ?─) 'face 'shadow)
                 "\n"
                 (propertize "[RET] 查看详情  [n/p] 下/上一项  [q] 返回列表"
                             'face 'font-lock-comment-face)
@@ -393,6 +386,38 @@ SOURCE-KEY and TID are saved for context."
         (let ((first (next-single-property-change (point) 'freebox-vod-id)))
           (when first (goto-char first)))))
     (pop-to-buffer buf '((display-buffer-same-window)))))
+
+(defun freebox-image--gallery-insert-row (buf row-items name-chars)
+  "Insert one grid row into BUF: a line of thumbnails then a line of names.
+ROW-ITEMS is a list of VOD alists.  NAME-CHARS is the max name width in chars."
+  (let ((sep "  "))
+    ;; Image line: placeholders for each item
+    (dolist (v row-items)
+      (let* ((vod-id (freebox-ui--jget v 'id))
+             (pic    (freebox-ui--jget v 'pic))
+             (marker (point-marker)))
+        (let ((start (point)))
+          (insert (propertize "[loading...]"
+                              'face 'shadow
+                              'freebox-vod-id vod-id))
+          (put-text-property start (point) 'freebox-vod-id vod-id))
+        (insert sep)
+        ;; Async load thumbnail
+        (when (and pic (stringp pic) (not (string-empty-p pic)))
+          (let ((m marker) (b buf) (vid vod-id))
+            (freebox-image-get
+             pic
+             (lambda (path)
+               (when (and path (buffer-live-p b))
+                 (freebox-image--gallery-replace-placeholder b m path vid))))))))
+    (insert "\n")
+    ;; Name line: truncated names aligned under each thumbnail
+    (dolist (v row-items)
+      (let* ((name (or (freebox-ui--jget v 'name) "?"))
+             (label (truncate-string-to-width name name-chars nil nil "..")))
+        (insert (propertize (format (format "%%-%ds" (+ name-chars 2)) label)
+                            'face 'font-lock-keyword-face))))
+    (insert "\n\n")))
 
 (defun freebox-image--gallery-replace-placeholder (buf marker path vod-id)
   "In BUF, replace the placeholder at MARKER with a thumbnail image from PATH."
