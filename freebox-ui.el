@@ -430,9 +430,12 @@ C-g cancels silently: v-cursor stays at the current page."
                    (has-prev   (> page 1))
                    (next-label (format "-- Next page (p.%d/%d) --" (1+ page) pagecount))
                    (prev-label (format "-- Prev page (p.%d/%d) --" (1- page) pagecount))
+                   (gallery-label (format "-- 查看海报集 (p.%d, %d项) --" page (length candidates)))
                    (all-cands  (append
                                 (list (cons freebox-ui--back-label :back))
                                 (when has-prev (list (cons prev-label :prev)))
+                                (when (display-images-p)
+                                  (list (cons gallery-label :gallery)))
                                 candidates
                                 (when has-next (list (cons next-label :next)))))
                    (selected-name
@@ -450,6 +453,9 @@ C-g cancels silently: v-cursor stays at the current page."
                 (freebox-ui--category-page source-key tid cat-name (1- page)))
                ((eq selected-val :next)
                 (freebox-ui--category-page source-key tid cat-name (1+ page)))
+               ((eq selected-val :gallery)
+                (freebox-image-show-gallery
+                 items cat-name page pagecount source-key tid))
                (t
                 (freebox-ui-show-detail selected-val))))))))))
 
