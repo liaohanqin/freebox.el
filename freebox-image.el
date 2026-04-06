@@ -133,8 +133,12 @@ immediately with the cached path."
 (defvar-local freebox-image--poster-marker nil
   "Marker pointing to the poster insertion position.")
 
+(defvar-local freebox-image--gallery-context nil
+  "Gallery context for returning from poster detail: (source-key tid cat-name page).")
+
 (declare-function freebox-ui--select-episode "freebox-ui")
 (declare-function freebox-ui--jget "freebox-ui")
+(declare-function freebox-ui--category-page "freebox-ui")
 (declare-function hydra-keyboard-quit "hydra")
 
 (defvar freebox-image-mode-map
@@ -142,6 +146,8 @@ immediately with the cached path."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") #'freebox-image-select-episode)
     (define-key map (kbd "p")   #'freebox-image-select-episode)
+    (define-key map (kbd "b")   #'freebox-image-return-to-gallery)
+    (define-key map (kbd "v")   #'freebox-image-goto-vod-list)
     map)
   "Keymap for `freebox-image-mode'.")
 
@@ -149,6 +155,7 @@ immediately with the cached path."
   "Major mode for FreeBox poster preview.
 \\<freebox-image-mode-map>
 \\[freebox-image-select-episode] - Select episode and play
+\\[freebox-image-return-to-gallery] - Return to gallery (if available)
 \\[quit-window] - Close preview"
   :group 'freebox-image
   (setq-local cursor-type nil)
@@ -163,10 +170,33 @@ immediately with the cached path."
     (when (and vod vod-id)
       (freebox-ui--select-episode vod vod-id))))
 
-(defun freebox-image-show-poster (vod vod-id pic-url)
+(defun freebox-image-return-to-gallery ()
+  "Return to the gallery buffer if this poster was opened from a gallery."
+  (interactive)
+  (let ((ctx freebox-image--gallery-context))
+    (if (not ctx)
+        (message "FreeBox: gallery context not available. Use [q] to close.")
+      (pcase-let ((`(,source-key ,tid ,cat-name ,page) ctx))
+        (quit-window t)
+        (freebox-ui--category-page-gallery source-key tid cat-name page)))))
+
+(defun freebox-image-goto-vod-list ()
+  "Go back to the vod-list (category page) from poster detail."
+  (interactive)
+  (let ((ctx freebox-image--gallery-context))
+    (if (not ctx)
+        (message "FreeBox: no navigation context available.")
+      (pcase-let ((`(,source-key ,tid ,cat-name ,page) ctx))
+        (quit-window t)
+        (freebox-ui--category-page source-key tid cat-name page)))))
+
+(defun freebox-image-show-poster (vod vod-id pic-url &optional gallery-context)
   "Show poster preview buffer for VOD with VOD-ID.
 PIC-URL is the poster image URL.  Text metadata is shown immediately;
-the image is loaded asynchronously and inserted when ready."
+the image is loaded asynchronously and inserted when ready.
+
+GALLERY-CONTEXT, if provided, is a list (SOURCE-KEY TID CAT-NAME PAGE)
+saved to allow returning to the gallery."
   ;; Dismiss hydra if active
   (when (bound-and-true-p hydra-curr-map)
     (hydra-keyboard-quit))
@@ -177,7 +207,8 @@ the image is loaded asynchronously and inserted when ready."
         (freebox-image-mode)
         ;; Save state
         (setq freebox-image--vod vod
-              freebox-image--vod-id vod-id)
+              freebox-image--vod-id vod-id
+              freebox-image--gallery-context gallery-context)
         ;; Insert metadata
         (freebox-image--insert-metadata vod)
         ;; Poster placeholder
@@ -192,7 +223,9 @@ the image is loaded asynchronously and inserted when ready."
         (insert "\n"
                 (propertize (make-string 40 ?─) 'face 'shadow)
                 "\n"
-                (propertize "[RET/p] 选择剧集   [q] 返回"
+                (propertize (if gallery-context
+                               "[RET/p] 选择剧集   [b] 返回画廊   [v] 列表   [q] 返回"
+                             "[RET/p] 选择剧集   [q] 返回")
                             'face 'font-lock-comment-face)
                 "\n")
         (goto-char (point-min))))
@@ -286,6 +319,7 @@ the image is loaded asynchronously and inserted when ready."
     (define-key map (kbd "<backtab>") #'freebox-gallery-prev)
     (define-key map (kbd "n")         #'freebox-gallery-next-page)
     (define-key map (kbd "p")         #'freebox-gallery-prev-page)
+    (define-key map (kbd "v")         #'freebox-gallery-goto-vod-list)
     map)
   "Keymap for `freebox-gallery-mode'.")
 
@@ -337,8 +371,14 @@ the image is loaded asynchronously and inserted when ready."
   (let ((vod-id (get-text-property (point) 'freebox-vod-id)))
     (if (not vod-id)
         (message "FreeBox: no poster at point.")
-      (quit-window t)
-      (freebox-ui-show-detail vod-id))))
+      ;; Save gallery buffer instead of closing it, so we can return to it
+      (bury-buffer (current-buffer))
+      ;; Open detail with gallery context
+      (freebox-ui-show-detail vod-id
+                              (list freebox-image--gallery-source-key
+                                    freebox-image--gallery-tid
+                                    freebox-image--gallery-cat-name
+                                    freebox-image--gallery-page)))))
 
 (defun freebox-gallery-next-page ()
   "Load the next page in gallery view."
@@ -368,6 +408,16 @@ the image is loaded asynchronously and inserted when ready."
           (freebox-ui--category-page-gallery
            source-key tid cat-name (1- page)))
       (message "FreeBox: already at first page."))))
+
+(defun freebox-gallery-goto-vod-list ()
+  "Go back to the vod-list (category page) from gallery."
+  (interactive)
+  (let ((source-key freebox-image--gallery-source-key)
+        (tid freebox-image--gallery-tid)
+        (cat-name freebox-image--gallery-cat-name)
+        (page freebox-image--gallery-page))
+    (quit-window t)
+    (freebox-ui--category-page source-key tid cat-name page)))
 
 (defun freebox-image-show-gallery (items cat-name page pagecount source-key tid)
   "Show a gallery buffer with poster thumbnails for ITEMS.
@@ -412,7 +462,7 @@ Each cell shows the poster above its truncated title."
         (insert "\n"
                 (propertize (make-string 50 ?─) 'face 'shadow)
                 "\n"
-                (propertize "[RET] 查看详情  [j/k] 下/上一项  [n/p] 下/上一页  [q] 返回"
+                (propertize "[RET] 查看详情  [j/k] 下/上一项  [n/p] 下/上一页  [v] 列表  [q] 返回"
                             'face 'font-lock-comment-face)
                 "\n")
         ;; Move to first poster

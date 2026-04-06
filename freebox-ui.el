@@ -484,8 +484,10 @@ Used by gallery M-n/M-p page navigation."
 
 ;;; --- VOD detail & episode selection ------------------------------------------
 
-(defun freebox-ui-show-detail (vod-id)
-  "Fetch VOD details for VOD-ID and prompt user to select an episode."
+(defun freebox-ui-show-detail (vod-id &optional gallery-context)
+  "Fetch VOD details for VOD-ID and prompt user to select an episode.
+GALLERY-CONTEXT, if provided, is a list (SOURCE-KEY TID CAT-NAME PAGE)
+to allow returning to the gallery from the poster detail view."
   (freebox-ui--loading "loading details")
   (freebox-http-get-detail freebox-ui-current-source vod-id freebox-ui-current-client-id
     (lambda (err data)
@@ -507,7 +509,7 @@ Used by gallery M-n/M-p page navigation."
               (if (and pic (stringp pic) (not (string-empty-p pic))
                        (display-images-p))
                   ;; Show poster preview buffer; episode selection via RET/p
-                  (freebox-image-show-poster vod vod-id pic)
+                  (freebox-image-show-poster vod vod-id pic gallery-context)
                 ;; No poster or terminal: original text-only flow
                 (freebox-ui--show-vod-info vod)
                 (freebox-ui--select-episode vod vod-id)))))))))
