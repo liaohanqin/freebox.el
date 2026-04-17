@@ -304,6 +304,10 @@ saved to allow returning to the gallery."
 (defvar-local freebox-image--gallery-cat-name nil)
 (defvar-local freebox-image--gallery-page nil)
 (defvar-local freebox-image--gallery-pagecount nil)
+(defvar-local freebox-image--gallery-items nil
+  "Items data for current gallery page, used for refit on window resize.")
+(defvar-local freebox-image--gallery-last-width nil
+  "Last known window pixel width, to avoid redundant refit.")
 
 (declare-function freebox-ui-show-detail "freebox-ui")
 (declare-function freebox-ui--category-page "freebox-ui")
@@ -334,7 +338,76 @@ saved to allow returning to the gallery."
 \\[quit-window] - Close gallery"
   :group 'freebox-image
   (setq-local cursor-type 'box)
-  (setq-local truncate-lines t))
+  (setq-local truncate-lines t)
+  (add-hook 'window-size-change-functions
+            #'freebox-gallery--refit nil t))
+
+(defun freebox-gallery--refit (_frame)
+  "Re-render gallery grid when window width changes.
+Only acts if this buffer is displayed in a window and width actually changed."
+  (when (and freebox-image--gallery-items
+             (get-buffer-window (current-buffer)))
+    (let* ((win (get-buffer-window (current-buffer)))
+           (win-px (window-body-width win t)))
+      (unless (equal win-px freebox-image--gallery-last-width)
+        (setq freebox-image--gallery-last-width win-px)
+        (freebox-image--gallery-rerender)))))
+
+(defun freebox-image--gallery-rerender ()
+  "Re-render the gallery using saved items and current window width."
+  (let ((items freebox-image--gallery-items)
+        (cat-name freebox-image--gallery-cat-name)
+        (page freebox-image--gallery-page)
+        (pagecount freebox-image--gallery-pagecount)
+        (source-key freebox-image--gallery-source-key)
+        (tid freebox-image--gallery-tid)
+        (buf (current-buffer))
+        (inhibit-read-only t))
+    (erase-buffer)
+    ;; Title
+    (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
+                                cat-name page pagecount (length items))
+                        'face '(:weight bold :height 1.2)))
+    ;; Calculate columns
+    (let* ((cell-px (+ freebox-image-thumbnail-width 16))
+           (win-px (or (and (get-buffer-window buf)
+                            (window-body-width (get-buffer-window buf) t))
+                       800))
+           (cols (max 1 (floor (/ (float win-px) cell-px))))
+           (col-idx 0)
+           (row-items nil)
+           (all-pending nil))
+      (dolist (v items)
+        (push (cons col-idx v) row-items)
+        (cl-incf col-idx)
+        (when (= col-idx cols)
+          (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
+                all-pending)
+          (setq row-items nil col-idx 0)))
+      (when row-items
+        (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
+              all-pending))
+      ;; Async refresh for uncached posters
+      (dolist (p (apply #'nconc (nreverse all-pending)))
+        (pcase-let ((`(,pic-url ,marker ,vod-id) p))
+          (freebox-image-get
+           pic-url
+           (lambda (path)
+             (when (and path (buffer-live-p buf)
+                        (marker-position marker))
+               (freebox-image--gallery-replace-placeholder
+                buf marker path vod-id)))))))
+    ;; Footer
+    (insert "\n"
+            (propertize (make-string 50 ?─) 'face 'shadow)
+            "\n"
+            (propertize "[RET] 查看详情  [j/k] 下/上一项  [n/p] 下/上一页  [v] 列表  [q] 返回"
+                        'face 'font-lock-comment-face)
+            "\n")
+    ;; Move to first poster
+    (goto-char (point-min))
+    (let ((first (next-single-property-change (point) 'freebox-vod-id)))
+      (when first (goto-char first)))))
 
 (defun freebox-gallery-next ()
   "Move to the next poster in the gallery."
@@ -439,7 +512,8 @@ Each cell shows the poster above its truncated title."
               freebox-image--gallery-tid tid
               freebox-image--gallery-cat-name cat-name
               freebox-image--gallery-page page
-              freebox-image--gallery-pagecount pagecount)
+              freebox-image--gallery-pagecount pagecount
+              freebox-image--gallery-items items)
         ;; Title
         (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
                                     cat-name page pagecount (length items))
@@ -484,7 +558,11 @@ Each cell shows the poster above its truncated title."
         ;; Move to first poster
         (goto-char (point-min))
         (let ((first (next-single-property-change (point) 'freebox-vod-id)))
-          (when first (goto-char first)))))))
+          (when first (goto-char first)))
+        ;; Record initial width for refit comparison
+        (setq freebox-image--gallery-last-width
+              (and (get-buffer-window buf)
+                   (window-body-width (get-buffer-window buf) t)))))))
 
 (defun freebox-image--gallery-replace-placeholder (buf marker path vod-id)
   "Replace the [no image] placeholder at MARKER in BUF with thumbnail at PATH.
