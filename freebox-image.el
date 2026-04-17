@@ -136,6 +136,12 @@ immediately with the cached path."
 (defvar-local freebox-image--gallery-context nil
   "Gallery context for returning from poster detail: (source-key tid cat-name page).")
 
+(defvar-local freebox-image--cached-path nil
+  "Cached file path for the current poster image, used for refit on resize.")
+
+(defvar-local freebox-image--last-width nil
+  "Last known window pixel width for poster buffer, to avoid redundant refit.")
+
 (declare-function freebox-ui--select-episode "freebox-ui")
 (declare-function freebox-ui--jget "freebox-ui")
 (declare-function freebox-ui--category-page "freebox-ui")
@@ -261,28 +267,56 @@ saved to allow returning to the gallery."
   "Replace the poster placeholder in BUF with the image at PATH."
   (when (and (buffer-live-p buf) path (file-exists-p path))
     (with-current-buffer buf
-      (let ((inhibit-read-only t)
-            (marker freebox-image--poster-marker))
-        (when (and marker (marker-position marker))
-          (save-excursion
-            (goto-char marker)
-            ;; Delete placeholder text
-            (let ((end (line-end-position)))
-              (delete-region marker end))
-            ;; Insert image
-            (condition-case nil
-                (let* ((win (get-buffer-window buf))
-                       (max-w (if win
-                                  (- (window-body-width win t) 20)
-                                600))
-                       (img (create-image path nil nil
-                                          :max-width max-w
-                                          :max-height 500
-                                          :ascent 'center)))
-                  (insert-image img "[poster]"))
-              (error
-               (insert (propertize "[image load failed]"
-                                   'face 'font-lock-warning-face))))))))))
+      ;; Save path for refit on window resize
+      (setq freebox-image--cached-path path)
+      (freebox-image--insert-poster-at-point path buf)
+      ;; Record width for refit comparison
+      (let ((win (get-buffer-window buf)))
+        (setq freebox-image--last-width
+              (and win (window-body-width win t)))))))
+
+(defun freebox-image--insert-poster-at-point (path buf)
+  "Insert poster image at `freebox-image--poster-marker' in BUF using PATH.
+Replaces any existing content on that line (placeholder or old image)."
+  (let ((inhibit-read-only t)
+        (marker freebox-image--poster-marker))
+    (when (and marker (marker-position marker))
+      (save-excursion
+        (goto-char marker)
+        (let ((end (line-end-position)))
+          (delete-region marker end))
+        (condition-case nil
+            (let* ((win (get-buffer-window buf))
+                   (max-w (if win
+                              (- (window-body-width win t) 20)
+                            600))
+                   (img (create-image path nil nil
+                                      :max-width max-w
+                                      :max-height 500
+                                      :ascent 'center)))
+              (insert-image img "[poster]"))
+          (error
+           (insert (propertize "[image load failed]"
+                               'face 'font-lock-warning-face))))))))
+
+(defun freebox-image--poster-refit (frame)
+  "Re-insert poster image when window width changes for FRAME.
+Scans all windows on FRAME for a displayed *freebox-poster* buffer
+and refits its image if the width changed.
+This is a global hook, so it works even when the poster buffer
+is not the current buffer (e.g. after C-x 4 b)."
+  (dolist (win (window-list frame))
+    (let ((buf (window-buffer win)))
+      (when (and (buffer-live-p buf)
+                 (eq (buffer-local-value 'major-mode buf) 'freebox-image-mode)
+                 (buffer-local-value 'freebox-image--cached-path buf))
+        (let ((win-px (window-body-width win t))
+              (last-w (buffer-local-value 'freebox-image--last-width buf)))
+          (unless (equal win-px last-w)
+            (with-current-buffer buf
+              (setq freebox-image--last-width win-px)
+              (freebox-image--insert-poster-at-point
+               freebox-image--cached-path buf))))))))
 
 ;;; --- Poster gallery buffer ----------------------------------------------------
 
@@ -338,20 +372,7 @@ saved to allow returning to the gallery."
 \\[quit-window] - Close gallery"
   :group 'freebox-image
   (setq-local cursor-type 'box)
-  (setq-local truncate-lines t)
-  (add-hook 'window-size-change-functions
-            #'freebox-gallery--refit nil t))
-
-(defun freebox-gallery--refit (_frame)
-  "Re-render gallery grid when window width changes.
-Only acts if this buffer is displayed in a window and width actually changed."
-  (when (and freebox-image--gallery-items
-             (get-buffer-window (current-buffer)))
-    (let* ((win (get-buffer-window (current-buffer)))
-           (win-px (window-body-width win t)))
-      (unless (equal win-px freebox-image--gallery-last-width)
-        (setq freebox-image--gallery-last-width win-px)
-        (freebox-image--gallery-rerender)))))
+  (setq-local truncate-lines t))
 
 (defun freebox-image--gallery-rerender ()
   "Re-render the gallery using saved items and current window width."
@@ -643,6 +664,31 @@ Returns a list of (PIC-URL MARKER VOD-ID) for uncached items."
       (cl-incf col))
     (insert "\n\n")
     pending))
+
+;;; --- Global window-size-change hook ------------------------------------------
+
+;; Register global refit for poster and gallery buffers.
+;; This is necessary because buffer-local `window-size-change-functions'
+;; only fire when the buffer is current, so after C-x 4 b the poster
+;; buffer never gets notified.
+(add-hook 'window-size-change-functions #'freebox-image--poster-refit)
+(add-hook 'window-size-change-functions #'freebox-gallery--refit-global)
+
+(defun freebox-gallery--refit-global (frame)
+  "Global version of gallery refit for FRAME.
+Scans all windows on FRAME for a *freebox-gallery* buffer
+and refits if width changed."
+  (dolist (win (window-list frame))
+    (let ((buf (window-buffer win)))
+      (when (and (buffer-live-p buf)
+                 (eq (buffer-local-value 'major-mode buf) 'freebox-gallery-mode)
+                 (buffer-local-value 'freebox-image--gallery-items buf))
+        (let ((win-px (window-body-width win t))
+              (last-w (buffer-local-value 'freebox-image--gallery-last-width buf)))
+          (unless (equal win-px last-w)
+            (with-current-buffer buf
+              (setq freebox-image--gallery-last-width win-px)
+              (freebox-image--gallery-rerender))))))))
 
 (provide 'freebox-image)
 ;;; freebox-image.el ends here
