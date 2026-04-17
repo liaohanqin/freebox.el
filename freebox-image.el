@@ -443,21 +443,35 @@ Each cell shows the poster above its truncated title."
                                     cat-name page pagecount (length items))
                             'face '(:weight bold :height 1.2)))
         ;; Calculate columns per row
+        ;; Build grid rows and collect pending (uncached) items
         (let* ((cell-px (+ freebox-image-thumbnail-width 16))
                (win-px (or (and (get-buffer-window buf)
                                 (window-body-width (get-buffer-window buf) t))
                            800))
                (cols (max 1 (floor (/ (float win-px) cell-px))))
                (col-idx 0)
-               (row-items nil))
+               (row-items nil)
+               (all-pending nil))
           (dolist (v items)
             (push (cons col-idx v) row-items)
             (cl-incf col-idx)
             (when (= col-idx cols)
-              (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
+              (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
+                    all-pending)
               (setq row-items nil col-idx 0)))
           (when row-items
-            (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)))
+            (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
+                  all-pending))
+          ;; Async refresh: download uncached posters and replace placeholders
+          (dolist (p (apply #'nconc (nreverse all-pending)))
+            (pcase-let ((`(,pic-url ,marker ,vod-id) p))
+              (freebox-image-get
+               pic-url
+               (lambda (path)
+                 (when (and path (buffer-live-p buf)
+                            (marker-position marker))
+                   (freebox-image--gallery-replace-placeholder
+                    buf marker path vod-id)))))))
         ;; Footer
         (insert "\n"
                 (propertize (make-string 50 ?─) 'face 'shadow)
@@ -471,13 +485,43 @@ Each cell shows the poster above its truncated title."
           (when first (goto-char first)))))
     (pop-to-buffer buf '((display-buffer-same-window)))))
 
+(defun freebox-image--gallery-replace-placeholder (buf marker path vod-id)
+  "Replace the [no image] placeholder at MARKER in BUF with thumbnail at PATH.
+VOD-ID is set as the `freebox-vod-id' text property on the inserted image."
+  (when (and (buffer-live-p buf) (marker-position marker)
+             path (file-exists-p path))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (save-excursion
+          (goto-char marker)
+          ;; Delete placeholder text up to the next vod-id property or line end
+          (let ((end (or (next-single-property-change (point) 'freebox-vod-id)
+                         (line-end-position))))
+            (delete-region (point) end))
+          ;; Insert thumbnail
+          (condition-case nil
+              (let ((img (create-image path nil nil
+                                       :max-width freebox-image-thumbnail-width
+                                       :max-height freebox-image-thumbnail-height
+                                       :ascent 'center)))
+                (insert-image img "[poster]")
+                (put-text-property marker (point) 'freebox-vod-id vod-id))
+            (error nil)))
+        ;; Force window redisplay
+        (let ((win (get-buffer-window buf)))
+          (when win
+            (with-selected-window win
+              (redisplay t))))))))
+
 (defun freebox-image--gallery-insert-row (_buf indexed-items cell-px)
   "Insert one grid row: poster line then name line, pixel-aligned.
 INDEXED-ITEMS is a list of (IDX . VOD-ALIST) conses.
 CELL-PX is the cell width in pixels.
-Images are inserted synchronously from cache; uncached items show text."
+Images are inserted synchronously from cache; uncached items show text.
+Returns a list of (PIC-URL MARKER VOD-ID) for uncached items."
   (let ((name-chars (max 6 (/ (- cell-px 16) 8)))
-        (col 0))
+        (col 0)
+        (pending nil))
     ;; Poster line
     (dolist (entry indexed-items)
       (let* ((v      (cdr entry))
@@ -500,8 +544,10 @@ Images are inserted synchronously from cache; uncached items show text."
                                            :ascent 'center)))
                     (insert-image img "[poster]"))
                 (error (insert "[no image]")))
-            ;; No cache: show text placeholder
-            (insert (propertize "[no image]" 'face 'shadow)))
+            ;; No cache: show text placeholder, record for async refresh
+            (insert (propertize "[no image]" 'face 'shadow))
+            (when pic
+              (push (list pic (copy-marker start) vod-id) pending)))
           (put-text-property start (point) 'freebox-vod-id vod-id)))
       (cl-incf col))
     (insert "\n")
@@ -516,7 +562,8 @@ Images are inserted synchronously from cache; uncached items show text."
           (insert (propertize " " 'display `(space :align-to (,px-offset)))))
         (insert (propertize label 'face 'font-lock-keyword-face)))
       (cl-incf col))
-    (insert "\n\n")))
+    (insert "\n\n")
+    pending))
 
 (provide 'freebox-image)
 ;;; freebox-image.el ends here
