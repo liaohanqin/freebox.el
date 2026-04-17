@@ -429,6 +429,8 @@ Each cell shows the poster above its truncated title."
   (when (bound-and-true-p hydra-curr-map)
     (hydra-keyboard-quit))
   (let ((buf (get-buffer-create freebox-image-gallery-buffer-name)))
+    ;; Display buffer FIRST so window-body-width is accurate for column calculation
+    (pop-to-buffer buf '((display-buffer-same-window)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -442,7 +444,7 @@ Each cell shows the poster above its truncated title."
         (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
                                     cat-name page pagecount (length items))
                             'face '(:weight bold :height 1.2)))
-        ;; Calculate columns per row
+        ;; Calculate columns per row (window is now visible, width is accurate)
         ;; Build grid rows and collect pending (uncached) items
         (let* ((cell-px (+ freebox-image-thumbnail-width 16))
                (win-px (or (and (get-buffer-window buf)
@@ -482,8 +484,7 @@ Each cell shows the poster above its truncated title."
         ;; Move to first poster
         (goto-char (point-min))
         (let ((first (next-single-property-change (point) 'freebox-vod-id)))
-          (when first (goto-char first)))))
-    (pop-to-buffer buf '((display-buffer-same-window)))))
+          (when first (goto-char first)))))))
 
 (defun freebox-image--gallery-replace-placeholder (buf marker path vod-id)
   "Replace the [no image] placeholder at MARKER in BUF with thumbnail at PATH.
