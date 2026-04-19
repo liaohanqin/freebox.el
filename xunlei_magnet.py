@@ -515,9 +515,9 @@ class XunleiSDK:
         """Background thread: track actual download progress and detect stalls.
 
         Xunlei SDK creates 0-byte sparse files during download, so
-        os.path.getsize() returns 0 until the download completes.  We only
-        update the stored 'downloaded' value when the file size increases,
-        never overwriting with a smaller value.
+        os.path.getsize() returns the apparent (logical) size which may be
+        inaccurate. We use st_blocks*512 for actual disk usage instead,
+        and only update the stored 'downloaded' value when it increases.
         """
         STALL_LIMIT = 45  # 45 checks × 2s = 90s of zero progress after data appears
         stall_count = 0
@@ -531,7 +531,15 @@ class XunleiSDK:
 
             downloaded = 0
             if os.path.isfile(video_file_path):
-                downloaded = os.path.getsize(video_file_path)
+                try:
+                    st = os.stat(video_file_path)
+                    # Use st_blocks*512 for actual disk usage (works for sparse files)
+                    downloaded = st.st_blocks * 512
+                    # Cap at the logical file size
+                    if downloaded > st.st_size:
+                        downloaded = st.st_size
+                except OSError:
+                    downloaded = 0
 
             # Only update if file size increased (never go backwards)
             with self._lock:
@@ -634,18 +642,23 @@ class XunleiSDK:
                 return {"error": "task_not_found"}
             info = self._tasks[real_id]
             task_id = real_id
-        # Refresh downloaded size — only update if file size increased
-        # (Xunlei SDK creates 0-byte sparse files during download, so
-        # os.path.getsize() returns 0; we never overwrite with a smaller value)
+        # Refresh downloaded size — use st_blocks*512 for actual disk usage
+        # (handles sparse files where os.path.getsize returns logical size)
         local_file = info.get("local_file", "")
         downloaded = info.get("downloaded", 0)
         if local_file and os.path.isfile(local_file):
-            file_size = os.path.getsize(local_file)
-            if file_size > downloaded:
-                downloaded = file_size
-                with self._lock:
-                    if task_id in self._tasks:
-                        self._tasks[task_id]["downloaded"] = downloaded
+            try:
+                st = os.stat(local_file)
+                disk_size = st.st_blocks * 512
+                if disk_size > st.st_size:
+                    disk_size = st.st_size
+                if disk_size > downloaded:
+                    downloaded = disk_size
+                    with self._lock:
+                        if task_id in self._tasks:
+                            self._tasks[task_id]["downloaded"] = downloaded
+            except OSError:
+                pass
         result = {
             "status": info.get("phase", "unknown"),
             "url": info.get("url", ""),
@@ -680,16 +693,45 @@ class XunleiSDK:
             tasks = {}
             for tid, info in self._tasks.items():
                 task_data = dict(info)
-                # Refresh download size — only update if increased
+                # Refresh download size — use st_blocks*512 for actual disk usage
                 lf = task_data.get("local_file", "")
                 current_dl = task_data.get("downloaded", 0)
                 if lf and os.path.isfile(lf):
-                    file_size = os.path.getsize(lf)
-                    if file_size > current_dl:
-                        task_data["downloaded"] = file_size
+                    try:
+                        st = os.stat(lf)
+                        disk_size = st.st_blocks * 512
+                        if disk_size > st.st_size:
+                            disk_size = st.st_size
+                        if disk_size > current_dl:
+                            task_data["downloaded"] = disk_size
+                    except OSError:
+                        pass
                 # Ensure downloaded_h is always present
                 if "downloaded_h" not in task_data or not task_data["downloaded_h"]:
                     task_data["downloaded_h"] = self._format_size(task_data.get("downloaded", 0))
+                # Add per-file download progress for multi-file torrents
+                video_files = task_data.get("video_files", [])
+                if video_files:
+                    save_path = task_data.get("save_path", "")
+                    updated_vf = []
+                    for vf in video_files:
+                        vf = dict(vf)
+                        vf_path = os.path.join(save_path, vf.get("name", ""))
+                        if os.path.isfile(vf_path):
+                            st = os.stat(vf_path)
+                            # Use st_blocks*512 for actual disk usage (handles sparse files)
+                            disk_size = st.st_blocks * 512
+                            # Cap at file's declared size
+                            declared_size = vf.get("size", 0)
+                            if declared_size > 0 and disk_size > declared_size:
+                                disk_size = declared_size
+                            vf["downloaded"] = disk_size
+                            vf["downloaded_h"] = self._format_size(disk_size)
+                        else:
+                            vf["downloaded"] = 0
+                            vf["downloaded_h"] = "0.0B"
+                        updated_vf.append(vf)
+                    task_data["video_files"] = updated_vf
                 tasks[str(tid)] = task_data
             return {
                 "status": "running",
