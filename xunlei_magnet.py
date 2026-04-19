@@ -592,6 +592,23 @@ class XunleiSDK:
                 info["video_name"] = selected["name"]
             return self._task_progress(task_id)
 
+        # Stop existing BT task before creating a new one
+        # (SDK rejects XLCreateBtTask if a BT task already owns the save_path)
+        with self._lock:
+            old_url = info.get("url", "")
+            # Clear the old URL so mpv won't use it
+            info["url"] = ""
+            info["phase"] = "creating_bt_task"
+            info["video_name"] = selected["name"]
+            info["video_index"] = file_index
+
+        # Stop and release the old BT task (safe to call even if none exists)
+        try:
+            self.stop_task(task_id)
+            self.release_task(task_id)
+        except Exception:
+            pass
+
         # Launch background thread to continue with selected file
         torrent_file = info.get("torrent_file", "")
         save_path = info.get("save_path", "")
