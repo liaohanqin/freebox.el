@@ -58,6 +58,10 @@ Directories older than this are automatically cleaned up when the daemon starts.
   :type 'integer
   :group 'freebox)
 
+(defvar freebox-empv--last-save-dir nil
+  "Last directory used for saving magnet downloads.
+Used as default for subsequent save operations.")
+
 ;; ── Python socket helper (used by all daemon communication) ──
 
 (defun freebox-empv--xunlei-python-script ()
@@ -653,9 +657,11 @@ Files still downloading are marked with their progress."
               (message "FreeBox: 文件不存在 — %s" local-file))
              (t
               (let* ((dest-dir (read-directory-name
-                                (format "保存 %s 到: " name)))
+                                (format "保存 %s 到: " name)
+                                (or freebox-empv--last-save-dir "~/")))
                      (filename (file-name-nondirectory local-file))
                      (dest-path (expand-file-name filename dest-dir)))
+                (setq freebox-empv--last-save-dir dest-dir)
                 (copy-file local-file dest-path t)
                 (message "FreeBox: 已保存到 %s" dest-path))))))))))
 
