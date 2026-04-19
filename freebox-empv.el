@@ -10,6 +10,7 @@
 
 (require 'empv nil t)
 (require 'json)
+(require 'cl-lib)
 
 ;; ── Xunlei SDK daemon configuration ──
 
@@ -142,6 +143,10 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
             (message "FreeBox: streaming %s via xlairplay (%s)"
                      (or video-name "video") (or downloaded ""))
             (freebox-empv--play-mpv url (or freebox-empv--xunlei-poll-title video-name)))
+           ;; Multiple video files — user must select
+           ((string= phase "needs_selection")
+            (freebox-empv--xunlei-cancel-poll)
+            (freebox-empv--xunlei-select-file result))
            ;; Fetching metadata
            ((string= phase "fetching_metadata")
             (message "FreeBox: fetching torrent metadata for %s..."
@@ -165,6 +170,36 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
       (error
        (freebox-empv--xunlei-cancel-poll)
        (message "FreeBox: lost connection to Xunlei daemon")))))
+
+(defun freebox-empv--xunlei-select-file (progress-result)
+  "Present video file selection from PROGRESS-RESULT via completing-read.
+Sends the selected file index to the daemon and resumes progress polling."
+  (let* ((video-files (append (alist-get 'video_files progress-result) nil))
+         (task-id (alist-get 'task_id progress-result))
+         (candidates
+          (mapcar (lambda (vf)
+                    (let* ((name (alist-get 'name vf))
+                           (size-h (alist-get 'size_h vf))
+                           (idx (alist-get 'index vf))
+                           (display (format "%s  (%s)" name size-h)))
+                      (cons display idx)))
+                  video-files))
+         (choice (completing-read
+                  "Select video file: "
+                  (mapcar #'car candidates)
+                  nil t)))
+    (when-let* ((selected (cl-find choice candidates :key #'car :test #'string=)))
+      (let* ((file-index (cdr selected))
+             (sel-result (freebox-empv--xunlei-send-raw
+                          `(("cmd" . "select")
+                            ("task_id" . ,task-id)
+                            ("file_index" . ,file-index)))))
+        (if (alist-get 'error sel-result)
+            (message "FreeBox: file selection failed — %s" (alist-get 'error sel-result))
+          (freebox-empv--xunlei-start-poll
+           (number-to-string task-id)
+           (or freebox-empv--xunlei-poll-title
+               (alist-get 'video_name sel-result))))))))
 
 (defun freebox-empv--xunlei-start-poll (task-id title)
   "Start polling for TASK-ID progress every 3 seconds.
@@ -234,7 +269,13 @@ URL is the magnet link.  TITLE is optional display name."
              (error-msg (alist-get 'error result))
              (video-name (alist-get 'video_name result)))
         (cond
-         ;; Got a task_id — start progress polling
+         ;; Already ready (cached)
+         ((and (string= status "ready")
+               (alist-get 'url result)
+               (not (string-empty-p (alist-get 'url result))))
+          (freebox-empv--play-mpv (alist-get 'url result)
+                                  (or title video-name)))
+         ;; Got a task_id — start progress polling (covers fetching/creating/downloading)
          ((and task-id
                (member status '("fetching_metadata" "creating_bt_task"
                                 "downloading" "ready")))
@@ -248,12 +289,10 @@ URL is the magnet link.  TITLE is optional display name."
                    (or video-name ""))
           (freebox-empv--xunlei-start-poll
            (number-to-string task-id) (or title video-name)))
-         ;; Already ready (cached)
-         ((and (string= status "ready")
-               (alist-get 'url result)
-               (not (string-empty-p (alist-get 'url result))))
-          (freebox-empv--play-mpv (alist-get 'url result)
-                                  (or title video-name)))
+         ;; Multiple video files — user must select (can happen on dedup hit)
+         ((string= status "needs_selection")
+          (setq freebox-empv--xunlei-poll-title (or title video-name))
+          (freebox-empv--xunlei-select-file result))
          ;; Error from daemon
          (t
           (message "FreeBox: magnet playback failed — %s"
