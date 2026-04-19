@@ -414,7 +414,7 @@ Return a list of alists: ((name . \"filename\") (path . \"/full/path\") (size . 
                    (complete-p (and total-size
                                     (> total-size 0)
                                     (>= (or downloaded 0) total-size))))
-              (when (and local-file (file-exists-p local-file))
+              (when local-file
                 (push `((name . ,(if (string-empty-p video-name)
                                      (file-name-nondirectory local-file)
                                    video-name))
@@ -511,14 +511,14 @@ Files still downloading are marked with their progress."
             (cond
              ((member phase '("fetching_metadata" "creating_bt_task"))
               (message "FreeBox: 资源尚未开始下载 — %s" name))
-             ((not (file-exists-p local-file))
-              (message "FreeBox: 文件不存在 — %s" local-file))
              ((not (alist-get 'complete info))
               (message "FreeBox: 资源尚未下载完成 (%s/%s) — %s"
                        (alist-get 'size_h info)
                        (let ((ts (alist-get 'total_size info)))
                          (if ts (freebox-empv--format-size ts) "?"))
                        name))
+             ((not (file-exists-p local-file))
+              (message "FreeBox: 文件不存在 — %s" local-file))
              (t
               (let* ((dest-dir (read-directory-name
                                 (format "保存 %s 到: " name)))
