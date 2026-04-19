@@ -324,6 +324,7 @@ class XunleiSDK:
                 "magnet_task_id": 0,
                 "phase": "fetching_metadata",
                 "downloaded": 0,
+                "downloaded_h": "0.0B",
                 "total_size": 0,
                 "torrent_file": "",
                 "video_files": [],
@@ -669,7 +670,9 @@ class XunleiSDK:
                     file_size = os.path.getsize(lf)
                     if file_size > current_dl:
                         task_data["downloaded"] = file_size
-                        task_data["downloaded_h"] = self._format_size(file_size)
+                # Ensure downloaded_h is always present
+                if "downloaded_h" not in task_data or not task_data["downloaded_h"]:
+                    task_data["downloaded_h"] = self._format_size(task_data.get("downloaded", 0))
                 tasks[str(tid)] = task_data
             return {
                 "status": "running",
