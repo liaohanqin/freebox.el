@@ -418,7 +418,13 @@ class XunleiSDK:
 
     def _create_bt_and_wait(self, magnet_url, save_path, task_id, max_wait,
                             torrent_file, video_idx, video_name):
-        """Create BT task for a selected video file and wait for streaming URL."""
+        """Create BT task for a selected video file and get streaming URL.
+
+        With XLSetPlayerMode enabled, the xlairplay proxy can stream immediately
+        from the SDK's download buffer. We don't wait for data on disk — just
+        get the URL and let mpv handle buffering.  A background thread tracks
+        actual download progress for status display.
+        """
         with self._lock:
             if task_id in self._tasks:
                 self._tasks[task_id]["video_name"] = video_name
@@ -458,76 +464,101 @@ class XunleiSDK:
             if bt_task_id in self._tasks:
                 self._tasks[bt_task_id]["phase"] = "downloading"
 
-        # Wait for video data to appear (at least 2MB for streaming)
-        # Stall detection: only counts after a file has appeared with non-zero size.
-        # Before any file exists, we just wait (grace period for BT to create files).
-        STALL_LIMIT = 15  # 15 checks × 2s = 30s of zero progress AFTER file appears
-        stall_count = 0
-        last_downloaded = 0
+        # Wait for the video file to appear on disk (up to 60s)
+        # Xunlei SDK creates 0-byte sparse files; we just need the path,
+        # not actual data — xlairplay streams from the SDK buffer.
         video_file_path = None
-        for i in range(max_wait // 2):
+        for i in range(30):
             time.sleep(2)
             found = self._find_video_file_in_dir(save_path, video_name)
             if found:
-                video_file_path, downloaded = found
-                with self._lock:
-                    if bt_task_id in self._tasks:
-                        self._tasks[bt_task_id]["downloaded"] = downloaded
-                        self._tasks[bt_task_id]["total_size"] = downloaded
-                        self._tasks[bt_task_id]["local_file"] = video_file_path
-                if downloaded > 2 * 1024 * 1024:
-                    break
-                # Stall check: only count if file has appeared with some data
-                if downloaded > 0:
-                    if downloaded > last_downloaded:
-                        stall_count = 0
-                        last_downloaded = downloaded
-                    else:
-                        stall_count += 1
-            else:
-                # Fallback: check any video file
-                videos = self._find_video_file_in_dir(save_path)
-                if videos:
-                    video_file_path = os.path.join(save_path, videos[0][0])
-                    downloaded = os.path.getsize(video_file_path) if os.path.isfile(video_file_path) else 0
-                    with self._lock:
-                        if bt_task_id in self._tasks:
-                            self._tasks[bt_task_id]["downloaded"] = downloaded
-                            self._tasks[bt_task_id]["total_size"] = videos[0][1]
-                            self._tasks[bt_task_id]["local_file"] = video_file_path
-                    if downloaded > 2 * 1024 * 1024:
-                        break
-                    if downloaded > 0:
-                        if downloaded > last_downloaded:
-                            stall_count = 0
-                            last_downloaded = downloaded
-                        else:
-                            stall_count += 1
-                # No file found yet — just wait, don't count as stalled
+                video_file_path, _ = found
+                break
+            # Fallback: check any video file
+            videos = self._find_video_file_in_dir(save_path)
+            if videos:
+                video_file_path = os.path.join(save_path, videos[0][0])
+                break
 
-            # Auto-cancel stalled downloads
-            if stall_count >= STALL_LIMIT:
-                with self._lock:
-                    if bt_task_id in self._tasks:
-                        self._tasks[bt_task_id]["phase"] = "error"
-                        self._tasks[bt_task_id]["error"] = "download_stalled"
-                self.stop_task(bt_task_id)
-                self.release_task(bt_task_id)
-                return
-
+        # If file not found yet, try the expected path — xlairplay may still work
         if not video_file_path:
-            with self._lock:
-                if bt_task_id in self._tasks:
-                    self._tasks[bt_task_id]["phase"] = "error"
-                    self._tasks[bt_task_id]["error"] = "video_download_timeout"
-            return
+            video_file_path = os.path.join(save_path, video_name)
 
-        # Get xlairplay HTTP URL for streaming
+        with self._lock:
+            if bt_task_id in self._tasks:
+                self._tasks[bt_task_id]["local_file"] = video_file_path
+                # Set total_size from torrent info if available
+                if not self._tasks[bt_task_id].get("total_size"):
+                    for vf in self._tasks[bt_task_id].get("video_files", []):
+                        if vf["index"] == video_idx:
+                            self._tasks[bt_task_id]["total_size"] = vf["size"]
+                            break
+
+        # Get xlairplay HTTP URL — works immediately with player mode
+        # (streams from SDK buffer, not from disk file)
         result, url = self.get_local_url(video_file_path)
         with self._lock:
             if bt_task_id in self._tasks:
                 self._tasks[bt_task_id]["url"] = url
                 self._tasks[bt_task_id]["phase"] = "ready"
+
+        # Start background thread to track actual download progress
+        t = threading.Thread(
+            target=self._track_download,
+            args=(bt_task_id, video_file_path),
+            daemon=True
+        )
+        t.start()
+
+    def _track_download(self, bt_task_id, video_file_path):
+        """Background thread: track actual download progress and detect stalls.
+
+        Xunlei SDK creates 0-byte sparse files during download, so
+        os.path.getsize() returns 0 until the download completes.  We only
+        update the stored 'downloaded' value when the file size increases,
+        never overwriting with a smaller value.
+        """
+        STALL_LIMIT = 45  # 45 checks × 2s = 90s of zero progress after data appears
+        stall_count = 0
+        last_downloaded = 0
+
+        for i in range(450):  # 450 × 2s = 15 minutes max tracking
+            time.sleep(2)
+            with self._lock:
+                if bt_task_id not in self._tasks:
+                    return  # Task was removed
+
+            downloaded = 0
+            if os.path.isfile(video_file_path):
+                downloaded = os.path.getsize(video_file_path)
+
+            # Only update if file size increased (never go backwards)
+            with self._lock:
+                if bt_task_id in self._tasks:
+                    current = self._tasks[bt_task_id].get("downloaded", 0)
+                    if downloaded > current:
+                        self._tasks[bt_task_id]["downloaded"] = downloaded
+                        self._tasks[bt_task_id]["downloaded_h"] = self._format_size(downloaded)
+
+            # Stall detection (only after file has data)
+            if downloaded > 0:
+                if downloaded > last_downloaded:
+                    stall_count = 0
+                    last_downloaded = downloaded
+                else:
+                    stall_count += 1
+
+            if stall_count >= STALL_LIMIT:
+                break
+
+            # If download appears complete, stop tracking
+            with self._lock:
+                if bt_task_id in self._tasks:
+                    total = self._tasks[bt_task_id].get("total_size", 0)
+                    if total > 0 and downloaded >= total:
+                        self._tasks[bt_task_id]["downloaded"] = downloaded
+                        self._tasks[bt_task_id]["downloaded_h"] = self._format_size(downloaded)
+                        return
 
     def select_file(self, task_id, file_index):
         """User selected a file from the list. Continue with BT task creation.
@@ -585,14 +616,18 @@ class XunleiSDK:
                 return {"error": "task_not_found"}
             info = self._tasks[real_id]
             task_id = real_id
-        # Refresh downloaded size
+        # Refresh downloaded size — only update if file size increased
+        # (Xunlei SDK creates 0-byte sparse files during download, so
+        # os.path.getsize() returns 0; we never overwrite with a smaller value)
         local_file = info.get("local_file", "")
         downloaded = info.get("downloaded", 0)
         if local_file and os.path.isfile(local_file):
-            downloaded = os.path.getsize(local_file)
-            with self._lock:
-                if task_id in self._tasks:
-                    self._tasks[task_id]["downloaded"] = downloaded
+            file_size = os.path.getsize(local_file)
+            if file_size > downloaded:
+                downloaded = file_size
+                with self._lock:
+                    if task_id in self._tasks:
+                        self._tasks[task_id]["downloaded"] = downloaded
         result = {
             "status": info.get("phase", "unknown"),
             "url": info.get("url", ""),
@@ -627,11 +662,14 @@ class XunleiSDK:
             tasks = {}
             for tid, info in self._tasks.items():
                 task_data = dict(info)
-                # Refresh download size
+                # Refresh download size — only update if increased
                 lf = task_data.get("local_file", "")
+                current_dl = task_data.get("downloaded", 0)
                 if lf and os.path.isfile(lf):
-                    task_data["downloaded"] = os.path.getsize(lf)
-                    task_data["downloaded_h"] = self._format_size(task_data["downloaded"])
+                    file_size = os.path.getsize(lf)
+                    if file_size > current_dl:
+                        task_data["downloaded"] = file_size
+                        task_data["downloaded_h"] = self._format_size(file_size)
                 tasks[str(tid)] = task_data
             return {
                 "status": "running",

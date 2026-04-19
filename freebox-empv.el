@@ -153,8 +153,13 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
            ;; Ready to play
            ((and (string= phase "ready") url (not (string-empty-p url)))
             (freebox-empv--xunlei-cancel-poll)
-            (message "FreeBox: streaming %s via xlairplay (%s) — S to save"
-                     (or video-name "video") (or downloaded ""))
+            (let ((size-display
+                   (if (or (not downloaded)
+                           (string= downloaded "0.0B")
+                           (string= downloaded "0B"))
+                       "streaming" downloaded)))
+              (message "FreeBox: streaming %s via xlairplay (%s) — S to save"
+                       (or video-name "video") size-display))
             (freebox-empv--play-mpv url (or freebox-empv--xunlei-poll-title video-name)))
            ;; Multiple video files — user must select
            ((string= phase "needs_selection")
@@ -170,8 +175,13 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
                      (or video-name "video")))
            ;; Downloading
            ((string= phase "downloading")
-            (message "FreeBox: downloading %s... %s"
-                     (or video-name "video") (or downloaded "?")))
+            (let ((size-display
+                   (if (or (not downloaded)
+                           (string= downloaded "0.0B")
+                           (string= downloaded "0B"))
+                       "" (format " %s" downloaded))))
+              (message "FreeBox: downloading %s...%s"
+                       (or video-name "video") size-display)))
            ;; Error
            ((or error-msg (string= phase "error"))
             (freebox-empv--xunlei-cancel-poll)
