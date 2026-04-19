@@ -679,12 +679,17 @@ class XunleiSDK:
         if err:
             result["error"] = err
         # Include video file list when awaiting selection
+        if info.get("video_files"):
             result["video_files"] = info.get("video_files", [])
         return result
 
     def pause_task(self, task_id):
-        """Pause a download task (stop without releasing SDK handle).
-        The task can be resumed later with resume_task."""
+        """Pause a download task by stopping and releasing the SDK handle.
+
+        Since XLStopTask invalidates the task handle (XLStartTask returns 9105),
+        we must fully stop and release the task. Resume is done by recreating
+        the task from the cached torrent file via play_magnet.
+        """
         task_id = int(task_id)
         with self._lock:
             real_id = self._aliases.get(task_id, task_id)
@@ -693,9 +698,10 @@ class XunleiSDK:
             info = self._tasks[real_id]
             if info.get("phase") == "paused":
                 return self._task_progress(real_id)
-        # Stop the download (but keep the SDK task handle alive)
+        # Fully stop and release the SDK task
         try:
             self.stop_task(real_id)
+            self.release_task(real_id)
         except Exception as e:
             return {"error": f"stop_failed: {e}"}
         with self._lock:
@@ -704,8 +710,13 @@ class XunleiSDK:
         return self._task_progress(real_id)
 
     def resume_task(self, task_id):
-        """Resume a paused download task.
-        Restarts the task, re-enables player mode, and gets a fresh xlairplay URL."""
+        """Resume a paused download task by recreating it from cached torrent.
+
+        Since XLStopTask invalidates the task handle (XLStartTask returns 9105),
+        we cannot simply restart the task. Instead, we recreate the BT task
+        from the cached torrent file, re-selecting the previously chosen video file.
+        This preserves the video_index so the user doesn't need to re-select.
+        """
         task_id = int(task_id)
         with self._lock:
             real_id = self._aliases.get(task_id, task_id)
@@ -714,35 +725,78 @@ class XunleiSDK:
             info = self._tasks[real_id]
             if info.get("phase") != "paused":
                 return self._task_progress(real_id)
-        # Restart the download
-        try:
-            result = self.start_task(real_id)
-        except Exception as e:
-            return {"error": f"start_failed: {e}"}
-        # Re-enable player mode for streaming
-        try:
-            self.set_player_mode(real_id, 1)
-        except Exception:
-            pass
+            magnet_url = info.get("magnet_url", "")
+            save_path = info.get("save_path", "")
+            torrent_file = info.get("torrent_file", "")
+            video_index = info.get("video_index", 0)
+            video_name = info.get("video_name", "")
+            old_downloaded = info.get("downloaded", 0)
+            old_downloaded_h = info.get("downloaded_h", "0.0B")
+            old_total_size = info.get("total_size", 0)
+            old_video_files = info.get("video_files", [])
+
+        if not magnet_url:
+            return {"error": "no_magnet_url"}
+        if not torrent_file or not os.path.isfile(torrent_file):
+            # No cached torrent — fall back to full play_magnet
+            return self._resume_via_play_magnet(
+                task_id, real_id, magnet_url, old_downloaded, old_downloaded_h)
+
+        # Remove the paused task so play_magnet won't find it as duplicate
         with self._lock:
-            self._tasks[real_id]["phase"] = "downloading"
-        # Get fresh xlairplay URL
-        local_file = info.get("local_file", "")
-        if local_file and os.path.isfile(local_file):
-            _, url = self.get_local_url(local_file)
+            del self._tasks[real_id]
+            aliases_to_remove = [k for k, v in self._aliases.items() if v == real_id]
+            for k in aliases_to_remove:
+                del self._aliases[k]
+
+        # Create a new placeholder task
+        placeholder_id = hash(magnet_url) & 0xFFFFFFFF
+        with self._lock:
+            self._tasks[placeholder_id] = {
+                "url": "",
+                "save_path": save_path,
+                "magnet_url": magnet_url,
+                "local_file": "",
+                "video_index": video_index,
+                "video_name": video_name,
+                "magnet_task_id": 0,
+                "phase": "creating_bt_task",
+                "downloaded": old_downloaded,
+                "downloaded_h": old_downloaded_h,
+                "total_size": old_total_size,
+                "torrent_file": torrent_file,
+                "video_files": old_video_files,
+            }
+
+        # Launch background thread to create BT task with previously selected file
+        t = threading.Thread(
+            target=self._create_bt_and_wait,
+            args=(magnet_url, save_path, placeholder_id, 180,
+                  torrent_file, video_index, video_name),
+            daemon=True
+        )
+        t.start()
+
+        return self._task_progress(placeholder_id)
+
+    def _resume_via_play_magnet(self, task_id, real_id, magnet_url,
+                                 old_downloaded, old_downloaded_h):
+        """Fallback: resume by calling play_magnet (full re-creation).
+        Used when cached torrent file is not available."""
+        with self._lock:
+            del self._tasks[real_id]
+            aliases_to_remove = [k for k, v in self._aliases.items() if v == real_id]
+            for k in aliases_to_remove:
+                del self._aliases[k]
+        result = self.play_magnet(magnet_url)
+        if old_downloaded > 0 and not result.get("error"):
+            new_task_id = result.get("task_id", 0)
             with self._lock:
-                if real_id in self._tasks:
-                    self._tasks[real_id]["url"] = url or ""
-                    self._tasks[real_id]["phase"] = "ready" if url else "downloading"
-        # Restart download tracking thread
-        if local_file:
-            t = threading.Thread(
-                target=self._track_download,
-                args=(real_id, local_file),
-                daemon=True
-            )
-            t.start()
-        return self._task_progress(real_id)
+                if new_task_id in self._tasks:
+                    if old_downloaded > self._tasks[new_task_id].get("downloaded", 0):
+                        self._tasks[new_task_id]["downloaded"] = old_downloaded
+                        self._tasks[new_task_id]["downloaded_h"] = old_downloaded_h
+        return result
 
     def stop_magnet(self, task_id):
         task_id = int(task_id)

@@ -351,7 +351,6 @@ URL is the magnet link.  TITLE is optional display name."
              (task-id (alist-get 'task_id result))
              (error-msg (alist-get 'error result))
              (video-name (alist-get 'video_name result)))
-        (message "FreeBox: play result status=%S task_id=%S url=%S" status task-id (and (alist-get 'url result) "present"))
         (cond
          ;; Already ready (cached)
          ((and (string= status "ready")
@@ -611,23 +610,27 @@ Files still downloading are marked with their progress."
              ;; Paused — resume download and play
              ((string= phase "paused")
               (if task-id
-                  (let ((result (freebox-empv--xunlei-send-raw
-                                 `(("cmd" . "resume")
-                                   ("task_id" . ,task-id)))))
-                    (if (let ((e (alist-get 'error result))) (and e (not (string-empty-p e))))
+                  (let* ((result (freebox-empv--xunlei-send-raw
+                                  `(("cmd" . "resume")
+                                    ("task_id" . ,task-id))))
+                         (err (let ((e (alist-get 'error result)))
+                                (and e (not (string-empty-p e))))))
+                    (if err
                         (message "FreeBox: 恢复下载失败 — %s" (alist-get 'error result))
-                      (let ((url (alist-get 'url result))
-                            (new-phase (alist-get 'status result)))
+                      ;; resume_task recreates the task with a new task_id
+                      ;; via play_magnet — must use the new task_id from result
+                      (let* ((new-task-id (let ((tid (alist-get 'task_id result)))
+                                            (if tid (number-to-string tid) task-id)))
+                             (url (alist-get 'url result))
+                             (new-phase (alist-get 'status result)))
                         (message "FreeBox: 已恢复下载 %s" name)
-                        ;; If ready, start playing immediately
                         (when (and (string= new-phase "ready")
                                    url (not (string-empty-p url)))
-                          (freebox-empv--xunlei-register-exit-hook task-id)
+                          (freebox-empv--xunlei-register-exit-hook new-task-id)
                           (freebox-empv--play-mpv url name))
-                        ;; If still downloading, start progress poll
                         (when (member new-phase '("downloading" "creating_bt_task"
                                                    "fetching_metadata"))
-                          (freebox-empv--xunlei-start-poll task-id name)))))
+                          (freebox-empv--xunlei-start-poll new-task-id name)))))
                 (message "FreeBox: 无法恢复 — 无 task_id")))
              ;; Available but not yet downloaded — trigger select_file
              ((string= phase "available")
