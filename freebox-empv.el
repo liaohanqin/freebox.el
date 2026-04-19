@@ -42,6 +42,17 @@ Added to LD_LIBRARY_PATH when starting the daemon."
 (defvar freebox-empv--xunlei-poll-title nil
   "Title of the current magnet being polled.")
 
+(defcustom freebox-empv-download-dir "/tmp/xunlei_magnet"
+  "Directory where magnet downloads are stored."
+  :type 'string
+  :group 'freebox)
+
+(defcustom freebox-empv-download-max-age 7
+  "Maximum age in days for magnet download directories.
+Directories older than this are automatically cleaned up when the daemon starts."
+  :type 'integer
+  :group 'freebox)
+
 ;; ── Python socket helper (used by all daemon communication) ──
 
 (defun freebox-empv--xunlei-python-script ()
@@ -95,7 +106,9 @@ Returns t on success, nil on failure."
                       (message "FreeBox: Xunlei daemon exited"))))))
       (when proc
         (sleep-for 1)
-        (freebox-empv-xunlei-running-p)))))
+        (when (freebox-empv-xunlei-running-p)
+          (freebox-empv-cleanup-downloads)
+          t)))))
 
 (defun freebox-empv-xunlei-stop ()
   "Stop the xunlei_magnet.py daemon."
@@ -140,7 +153,7 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
            ;; Ready to play
            ((and (string= phase "ready") url (not (string-empty-p url)))
             (freebox-empv--xunlei-cancel-poll)
-            (message "FreeBox: streaming %s via xlairplay (%s)"
+            (message "FreeBox: streaming %s via xlairplay (%s) — S to save"
                      (or video-name "video") (or downloaded ""))
             (freebox-empv--play-mpv url (or freebox-empv--xunlei-poll-title video-name)))
            ;; Multiple video files — user must select
@@ -323,6 +336,70 @@ Handles both running and not-running mpv cases, with playlist preservation."
                         old-path))))))
    (t
     (empv-start url))))
+
+;; ── Auto cleanup old downloads ──
+
+(defun freebox-empv-cleanup-downloads ()
+  "Remove magnet download directories older than `freebox-empv-download-max-age' days.
+Skips directories that are actively used by current daemon tasks."
+  (when (file-directory-p freebox-empv-download-dir)
+    (let* ((active-paths (freebox-empv--active-save-paths))
+           (now (float-time))
+           (max-age-secs (* freebox-empv-download-max-age 86400))
+           (deleted 0))
+      (dolist (entry (directory-files freebox-empv-download-dir t))
+        (let ((name (file-name-nondirectory entry)))
+          (unless (member name '("." ".."))
+            (when (and (file-directory-p entry)
+                       (not (member (file-name-as-directory entry) active-paths))
+                       (> (- now (float-time (nth 5 (file-attributes entry))))
+                          max-age-secs))
+              (delete-directory entry t)
+              (setq deleted (1+ deleted))))))
+      (when (> deleted 0)
+        (message "FreeBox: cleaned up %d old download directory(ies)" deleted)))))
+
+(defun freebox-empv--active-save-paths ()
+  "Return list of save_path values from active daemon tasks."
+  (condition-case nil
+      (let* ((status (freebox-empv--xunlei-send-raw '((cmd . "status"))))
+             (tasks (alist-get 'tasks status)))
+        (delq nil
+              (mapcar (lambda (pair)
+                        (file-name-as-directory
+                         (alist-get 'save_path (cdr pair))))
+                      (if (listp tasks) tasks (append tasks nil)))))
+    (error nil)))
+
+;; ── Save magnet file ──
+
+(defun freebox-empv-save-magnet-file ()
+  "Save the current magnet download to another directory.
+Prompts for a destination directory.  If the download is not yet
+complete, shows a warning instead."
+  (interactive)
+  (if (not freebox-empv--xunlei-poll-task-id)
+      (message "FreeBox: no active magnet download")
+    (condition-case err
+        (let* ((result (freebox-empv--xunlei-send-raw
+                        `(("cmd" . "progress")
+                          ("task_id" . ,freebox-empv--xunlei-poll-task-id))))
+               (phase (alist-get 'status result))
+               (local-file (alist-get 'local_file result))
+               (error-msg (alist-get 'error result)))
+          (cond
+           ((or error-msg (string= phase "error"))
+            (message "FreeBox: cannot save — %s" (or error-msg "task failed")))
+           ((not (and local-file (file-exists-p local-file)))
+            (message "FreeBox: 资源尚未完成下载"))
+           (t
+            (let* ((dest-dir (read-directory-name "Save to: "))
+                   (filename (file-name-nondirectory local-file))
+                   (dest-path (expand-file-name filename dest-dir)))
+              (copy-file local-file dest-path t)
+              (message "FreeBox: saved to %s" dest-path)))))
+      (error
+       (message "FreeBox: failed to save — %s" err)))))
 
 (provide 'freebox-empv)
 ;;; freebox-empv.el ends here

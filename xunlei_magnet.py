@@ -302,6 +302,9 @@ class XunleiSDK:
             for tid, info in self._tasks.items():
                 existing_hash = self._extract_info_hash(info.get("magnet_url", ""))
                 if existing_hash == info_hash:
+                    # Multi-file torrent: reset to needs_selection so user can re-select
+                    if len(info.get("video_files", [])) > 1:
+                        info["phase"] = "needs_selection"
                     return self._task_progress(tid)
 
         h = info_hash[:12]
@@ -498,7 +501,8 @@ class XunleiSDK:
                 self._tasks[bt_task_id]["phase"] = "ready"
 
     def select_file(self, task_id, file_index):
-        """User selected a file from the list. Continue with BT task creation."""
+        """User selected a file from the list. Continue with BT task creation.
+        If the same file was previously selected and is ready, return it directly."""
         task_id = int(task_id)
         with self._lock:
             # Resolve alias
@@ -519,6 +523,13 @@ class XunleiSDK:
                 break
         if not selected:
             return {"error": "invalid_file_index", "available": [vf["index"] for vf in video_files]}
+
+        # If same file was previously downloaded and is ready, reuse it
+        if info.get("video_index") == file_index and info.get("phase") == "needs_selection" and info.get("url"):
+            with self._lock:
+                info["phase"] = "ready"
+                info["video_name"] = selected["name"]
+            return self._task_progress(task_id)
 
         # Launch background thread to continue with selected file
         torrent_file = info.get("torrent_file", "")

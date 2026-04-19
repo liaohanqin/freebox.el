@@ -14,6 +14,8 @@
 ;;   z  Select category  -- Select a category within current source
 ;;   s  Search videos    -- Full-text search
 ;;   v  Resume last pos  -- Resume from last remembered navigation node
+;;   o  Open URL         -- Play a URL directly (supports magnet links)
+;;   S  Save magnet file -- Save downloaded magnet file to another directory
 ;;   r  Start server     -- Start FreeBox backend
 ;;   k  Stop server      -- Stop managed backend
 ;;   q  Quit             -- Close menu
@@ -75,7 +77,9 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
       ("z" freebox-select-category "Select category"))
      "Browse"
      (("s" freebox-search  "Search videos")
-      ("v" freebox-resume  "Resume last pos"))
+      ("v" freebox-resume  "Resume last pos")
+      ("o" freebox-open-url "Open URL")
+      ("S" freebox-save-magnet-file "Save magnet file"))
      "Server"
      (("r" freebox-http-start-server "Start server")
       ("k" freebox-http-stop-server  "Stop server"))
@@ -102,7 +106,9 @@ Restores previous menu state and displays current selections in title."
       ("z" freebox-select-category "Select category"))
      "Browse"
      (("s" freebox-search  "Search videos")
-      ("v" freebox-resume  "Resume last pos"))
+      ("v" freebox-resume  "Resume last pos")
+      ("o" freebox-open-url "Open URL")
+      ("S" freebox-save-magnet-file "Save magnet file"))
      "Server"
      (("r" freebox-http-start-server "Start server")
       ("k" freebox-http-stop-server  "Stop server"))
@@ -150,11 +156,25 @@ Restores to the deepest saved node: vod-list page, category, or source selection
   (freebox-ui-resume))
 
 ;;;###autoload
+(defun freebox-open-url ()
+  "Open a URL for playback via empv.  Supports magnet links and direct URLs."
+  (interactive)
+  (let ((url (read-string "FreeBox URL (or magnet): ")))
+    (when (and url (not (string-empty-p url)))
+      (freebox-empv-play-url url))))
+
+;;;###autoload
+(defun freebox-save-magnet-file ()
+  "Save the current magnet download to another directory."
+  (interactive)
+  (freebox-empv-save-magnet-file))
+
+;;;###autoload
 (defun freebox-help ()
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  s=search  v=resume-last  r=start-server  k=stop-server  q=quit"))
+   "FreeBox: x=client  y=source  z=category  s=search  v=resume  o=open-url  S=save  r=start  k=stop  q=quit"))
 
 (provide 'freebox-commands)
 ;;; freebox-commands.el ends here
