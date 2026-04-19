@@ -302,6 +302,9 @@ class XunleiSDK:
             for tid, info in self._tasks.items():
                 existing_hash = self._extract_info_hash(info.get("magnet_url", ""))
                 if existing_hash == info_hash:
+                    # If paused, resume it
+                    if info.get("phase") == "paused":
+                        return self.resume_task(tid)
                     # Multi-file torrent: reset to needs_selection so user can re-select
                     if len(info.get("video_files", [])) > 1:
                         info["phase"] = "needs_selection"
@@ -657,6 +660,7 @@ class XunleiSDK:
                     with self._lock:
                         if task_id in self._tasks:
                             self._tasks[task_id]["downloaded"] = downloaded
+                            self._tasks[task_id]["downloaded_h"] = self._format_size(downloaded)
             except OSError:
                 pass
         result = {
@@ -669,12 +673,76 @@ class XunleiSDK:
             "downloaded": downloaded,
             "downloaded_h": self._format_size(downloaded),
             "total_size": info.get("total_size", 0),
-            "error": info.get("error", ""),
         }
+        # Only include error when there is one
+        err = info.get("error", "")
+        if err:
+            result["error"] = err
         # Include video file list when awaiting selection
-        if info.get("phase") == "needs_selection":
             result["video_files"] = info.get("video_files", [])
         return result
+
+    def pause_task(self, task_id):
+        """Pause a download task (stop without releasing SDK handle).
+        The task can be resumed later with resume_task."""
+        task_id = int(task_id)
+        with self._lock:
+            real_id = self._aliases.get(task_id, task_id)
+            if real_id not in self._tasks:
+                return {"error": "task_not_found"}
+            info = self._tasks[real_id]
+            if info.get("phase") == "paused":
+                return self._task_progress(real_id)
+        # Stop the download (but keep the SDK task handle alive)
+        try:
+            self.stop_task(real_id)
+        except Exception as e:
+            return {"error": f"stop_failed: {e}"}
+        with self._lock:
+            self._tasks[real_id]["phase"] = "paused"
+            self._tasks[real_id]["url"] = ""  # xlairplay URL invalid after stop
+        return self._task_progress(real_id)
+
+    def resume_task(self, task_id):
+        """Resume a paused download task.
+        Restarts the task, re-enables player mode, and gets a fresh xlairplay URL."""
+        task_id = int(task_id)
+        with self._lock:
+            real_id = self._aliases.get(task_id, task_id)
+            if real_id not in self._tasks:
+                return {"error": "task_not_found"}
+            info = self._tasks[real_id]
+            if info.get("phase") != "paused":
+                return self._task_progress(real_id)
+        # Restart the download
+        try:
+            result = self.start_task(real_id)
+        except Exception as e:
+            return {"error": f"start_failed: {e}"}
+        # Re-enable player mode for streaming
+        try:
+            self.set_player_mode(real_id, 1)
+        except Exception:
+            pass
+        with self._lock:
+            self._tasks[real_id]["phase"] = "downloading"
+        # Get fresh xlairplay URL
+        local_file = info.get("local_file", "")
+        if local_file and os.path.isfile(local_file):
+            _, url = self.get_local_url(local_file)
+            with self._lock:
+                if real_id in self._tasks:
+                    self._tasks[real_id]["url"] = url or ""
+                    self._tasks[real_id]["phase"] = "ready" if url else "downloading"
+        # Restart download tracking thread
+        if local_file:
+            t = threading.Thread(
+                target=self._track_download,
+                args=(real_id, local_file),
+                daemon=True
+            )
+            t.start()
+        return self._task_progress(real_id)
 
     def stop_magnet(self, task_id):
         task_id = int(task_id)
@@ -693,6 +761,7 @@ class XunleiSDK:
             tasks = {}
             for tid, info in self._tasks.items():
                 task_data = dict(info)
+                task_data["task_id"] = tid
                 # Refresh download size — use st_blocks*512 for actual disk usage
                 lf = task_data.get("local_file", "")
                 current_dl = task_data.get("downloaded", 0)
@@ -704,6 +773,7 @@ class XunleiSDK:
                             disk_size = st.st_size
                         if disk_size > current_dl:
                             task_data["downloaded"] = disk_size
+                            task_data["downloaded_h"] = self._format_size(disk_size)
                     except OSError:
                         pass
                 # Ensure downloaded_h is always present
@@ -824,6 +894,10 @@ def _run_daemon(sdk):
                 task_id = msg.get("task_id", 0)
                 file_index = msg.get("file_index", 0)
                 _send_msg(conn, sdk.select_file(int(task_id), int(file_index)))
+            elif cmd == "pause":
+                _send_msg(conn, sdk.pause_task(int(msg.get("task_id", 0))))
+            elif cmd == "resume":
+                _send_msg(conn, sdk.resume_task(int(msg.get("task_id", 0))))
             elif cmd == "shutdown":
                 _send_msg(conn, {"status": "shutting_down"})
                 running = False

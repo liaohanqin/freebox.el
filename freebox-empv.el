@@ -42,6 +42,11 @@ Added to LD_LIBRARY_PATH when starting the daemon."
 (defvar freebox-empv--xunlei-poll-title nil
   "Title of the current magnet being polled.")
 
+(defvar freebox-empv--xunlei-active-task-id nil
+  "Task ID of the magnet currently being played via mpv.
+Used to auto-pause the download when mpv exits.
+Nil when no magnet playback is active.")
+
 (defcustom freebox-empv-download-dir "/tmp/xunlei_magnet"
   "Directory where magnet downloads are stored."
   :type 'string
@@ -152,7 +157,11 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
           (cond
            ;; Ready to play
            ((and (string= phase "ready") url (not (string-empty-p url)))
-            (freebox-empv--xunlei-cancel-poll)
+            (let ((current-task-id freebox-empv--xunlei-poll-task-id))
+              (freebox-empv--xunlei-cancel-poll)
+              ;; Register auto-pause hook for when mpv exits
+              (when current-task-id
+                (freebox-empv--xunlei-register-exit-hook current-task-id)))
             (let ((size-display
                    (if (or (not downloaded)
                            (string= downloaded "0.0B")
@@ -225,7 +234,7 @@ Sends the selected file index to the daemon and resumes progress polling."
                           `(("cmd" . "select")
                             ("task_id" . ,task-id)
                             ("file_index" . ,file-index)))))
-        (if (alist-get 'error sel-result)
+        (if (let ((e (alist-get 'error sel-result))) (and e (not (string-empty-p e))))
             (message "FreeBox: file selection failed — %s" (alist-get 'error sel-result))
           (freebox-empv--xunlei-start-poll
            (number-to-string task-id)
@@ -250,6 +259,49 @@ TITLE is the video title for display."
   (setq freebox-empv--xunlei-poll-timer nil
         freebox-empv--xunlei-poll-task-id nil
         freebox-empv--xunlei-poll-title nil))
+
+(defun freebox-empv--xunlei-on-player-stopped (state)
+  "Callback for `empv-player-state-changed-hook'.
+When mpv stops and a magnet task is active, pause the download.
+Uses a short delay to distinguish between track changes (transient stopped)
+and actual mpv exit (persistent stopped)."
+  (when (and (eq state 'stopped)
+             freebox-empv--xunlei-active-task-id)
+    (let ((task-id freebox-empv--xunlei-active-task-id))
+      ;; Delay check — if mpv restarts within 1s, this is a track change, not exit
+      (run-at-time 1.0 nil
+                   (lambda (saved-task-id)
+                     (when (and freebox-empv--xunlei-active-task-id
+                                (string= freebox-empv--xunlei-active-task-id saved-task-id)
+                                (not (and (fboundp 'empv--running?) (empv--running?))))
+                       ;; mpv is truly not running — pause the download
+                       (setq freebox-empv--xunlei-active-task-id nil)
+                       (remove-hook 'empv-player-state-changed-hook
+                                    #'freebox-empv--xunlei-on-player-stopped)
+                       (condition-case nil
+                           (let* ((result (freebox-empv--xunlei-send-raw
+                                          `(("cmd" . "pause")
+                                            ("task_id" . ,saved-task-id))))
+                                  (err (alist-get 'error result)))
+                             (if (and err (not (string-empty-p err)))
+                                 (message "FreeBox: auto-pause failed — %s" err)
+                               (message "FreeBox: magnet download paused (mpv exited)")))
+                         (error
+                          (message "FreeBox: auto-pause failed — daemon not reachable")))))
+                   task-id))))
+
+(defun freebox-empv--xunlei-register-exit-hook (task-id)
+  "Register hook to auto-pause TASK-ID when mpv exits."
+  (setq freebox-empv--xunlei-active-task-id task-id)
+  (add-hook 'empv-player-state-changed-hook
+            #'freebox-empv--xunlei-on-player-stopped)
+  (message "FreeBox: registered mpv exit hook for task %s" task-id))
+
+(defun freebox-empv--xunlei-unregister-exit-hook ()
+  "Remove the mpv exit hook if still registered."
+  (setq freebox-empv--xunlei-active-task-id nil)
+  (remove-hook 'empv-player-state-changed-hook
+               #'freebox-empv--xunlei-on-player-stopped))
 
 ;; ── Playback ──
 
@@ -299,11 +351,15 @@ URL is the magnet link.  TITLE is optional display name."
              (task-id (alist-get 'task_id result))
              (error-msg (alist-get 'error result))
              (video-name (alist-get 'video_name result)))
+        (message "FreeBox: play result status=%S task_id=%S url=%S" status task-id (and (alist-get 'url result) "present"))
         (cond
          ;; Already ready (cached)
          ((and (string= status "ready")
                (alist-get 'url result)
                (not (string-empty-p (alist-get 'url result))))
+          (when task-id
+            (freebox-empv--xunlei-register-exit-hook
+             (number-to-string task-id)))
           (freebox-empv--play-mpv (alist-get 'url result)
                                   (or title video-name)))
          ;; Got a task_id — start progress polling (covers fetching/creating/downloading)
@@ -461,7 +517,8 @@ Return a list of alists: ((name . \"filename\") (path . \"/full/path\") (size . 
                             (complete . ,complete-p)
                             (phase . ,phase)
                             (magnet . ,(or magnet-url ""))
-                            (source . "daemon"))
+                            (source . "daemon")
+                            (task_id . ,(alist-get 'task_id info)))
                           daemon-items))))))
           (setq results (nconc daemon-items results)))
       (error nil))
@@ -521,6 +578,7 @@ Files still downloading are marked with their progress."
                                (phase (alist-get 'phase f))
                                (tag (cond
                                      (complete " [已完成]")
+                                     ((string= phase "paused") " [已暂停]")
                                      ((member phase '("downloading"
                                                       "fetching_metadata"
                                                       "creating_bt_task"
@@ -550,6 +608,27 @@ Files still downloading are marked with their progress."
                  (task-id (alist-get 'task_id info))
                  (file-index (alist-get 'file_index info)))
             (cond
+             ;; Paused — resume download and play
+             ((string= phase "paused")
+              (if task-id
+                  (let ((result (freebox-empv--xunlei-send-raw
+                                 `(("cmd" . "resume")
+                                   ("task_id" . ,task-id)))))
+                    (if (let ((e (alist-get 'error result))) (and e (not (string-empty-p e))))
+                        (message "FreeBox: 恢复下载失败 — %s" (alist-get 'error result))
+                      (let ((url (alist-get 'url result))
+                            (new-phase (alist-get 'status result)))
+                        (message "FreeBox: 已恢复下载 %s" name)
+                        ;; If ready, start playing immediately
+                        (when (and (string= new-phase "ready")
+                                   url (not (string-empty-p url)))
+                          (freebox-empv--xunlei-register-exit-hook task-id)
+                          (freebox-empv--play-mpv url name))
+                        ;; If still downloading, start progress poll
+                        (when (member new-phase '("downloading" "creating_bt_task"
+                                                   "fetching_metadata"))
+                          (freebox-empv--xunlei-start-poll task-id name)))))
+                (message "FreeBox: 无法恢复 — 无 task_id")))
              ;; Available but not yet downloaded — trigger select_file
              ((string= phase "available")
               (if (and task-id file-index
