@@ -459,6 +459,11 @@ class XunleiSDK:
                 self._tasks[bt_task_id]["phase"] = "downloading"
 
         # Wait for video data to appear (at least 2MB for streaming)
+        # Stall detection: only counts after a file has appeared with non-zero size.
+        # Before any file exists, we just wait (grace period for BT to create files).
+        STALL_LIMIT = 15  # 15 checks × 2s = 30s of zero progress AFTER file appears
+        stall_count = 0
+        last_downloaded = 0
         video_file_path = None
         for i in range(max_wait // 2):
             time.sleep(2)
@@ -472,6 +477,13 @@ class XunleiSDK:
                         self._tasks[bt_task_id]["local_file"] = video_file_path
                 if downloaded > 2 * 1024 * 1024:
                     break
+                # Stall check: only count if file has appeared with some data
+                if downloaded > 0:
+                    if downloaded > last_downloaded:
+                        stall_count = 0
+                        last_downloaded = downloaded
+                    else:
+                        stall_count += 1
             else:
                 # Fallback: check any video file
                 videos = self._find_video_file_in_dir(save_path)
@@ -485,6 +497,23 @@ class XunleiSDK:
                             self._tasks[bt_task_id]["local_file"] = video_file_path
                     if downloaded > 2 * 1024 * 1024:
                         break
+                    if downloaded > 0:
+                        if downloaded > last_downloaded:
+                            stall_count = 0
+                            last_downloaded = downloaded
+                        else:
+                            stall_count += 1
+                # No file found yet — just wait, don't count as stalled
+
+            # Auto-cancel stalled downloads
+            if stall_count >= STALL_LIMIT:
+                with self._lock:
+                    if bt_task_id in self._tasks:
+                        self._tasks[bt_task_id]["phase"] = "error"
+                        self._tasks[bt_task_id]["error"] = "download_stalled"
+                self.stop_task(bt_task_id)
+                self.release_task(bt_task_id)
+                return
 
         if not video_file_path:
             with self._lock:
@@ -574,6 +603,7 @@ class XunleiSDK:
             "downloaded": downloaded,
             "downloaded_h": self._format_size(downloaded),
             "total_size": info.get("total_size", 0),
+            "error": info.get("error", ""),
         }
         # Include video file list when awaiting selection
         if info.get("phase") == "needs_selection":

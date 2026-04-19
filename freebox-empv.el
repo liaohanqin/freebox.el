@@ -175,8 +175,16 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
            ;; Error
            ((or error-msg (string= phase "error"))
             (freebox-empv--xunlei-cancel-poll)
-            (message "FreeBox: magnet playback failed — %s"
-                     (or error-msg "unknown error")))
+            (message "FreeBox: %s"
+                     (cond
+                      ((string= error-msg "download_stalled")
+                       "下载无速度，已自动取消")
+                      ((string= error-msg "torrent_metadata_timeout")
+                       "获取种子元数据超时，请检查网络")
+                      ((string= error-msg "video_download_timeout")
+                       "视频下载超时")
+                      (t (format "magnet playback failed — %s"
+                                 (or error-msg "unknown error"))))))
            ;; Unknown state — keep polling
            (t
             (message "FreeBox: magnet status %s..." (or phase "unknown")))))
@@ -373,33 +381,116 @@ Skips directories that are actively used by current daemon tasks."
 
 ;; ── Save magnet file ──
 
+(defun freebox-empv--scan-downloads ()
+  "Scan download directories and daemon tasks for downloadable files.
+Return a list of alists: ((name . \"filename\") (path . \"/full/path\") (size . 1234) (size_h . \"1.2GB\") (source . \"daemon\"|\"disk\"))."
+  (let (results)
+    ;; 1. Active daemon tasks
+    (condition-case nil
+        (let* ((status (freebox-empv--xunlei-send-raw '((cmd . "status"))))
+               (tasks (alist-get 'tasks status))
+               (task-list (if (listp tasks) tasks (append tasks nil))))
+          (dolist (pair task-list)
+            (let* ((info (cdr pair))
+                   (phase (alist-get 'phase info))
+                   (local-file (alist-get 'local_file info))
+                   (video-name (or (alist-get 'video_name info) ""))
+                   (magnet-url (alist-get 'magnet_url info)))
+              (when (and local-file (file-exists-p local-file))
+                (let* ((size (file-attribute-size (file-attributes local-file)))
+                       (size-h (freebox-empv--format-size size)))
+                  (push `((name . ,(if (string-empty-p video-name)
+                                       (file-name-nondirectory local-file)
+                                     video-name))
+                          (path . ,local-file)
+                          (size . ,size)
+                          (size_h . ,size-h)
+                          (phase . ,phase)
+                          (magnet . ,(or magnet-url ""))
+                          (source . "daemon"))
+                        results))))))
+      (error nil))
+    ;; 2. Disk-only downloads (not in daemon tasks)
+    (when (file-directory-p freebox-empv-download-dir)
+      (let ((daemon-files (mapcar (lambda (r) (alist-get 'path r)) results)))
+        (dolist (dir (directory-files freebox-empv-download-dir t))
+          (let ((dirname (file-name-nondirectory dir)))
+            (unless (member dirname '("." ".."))
+              (when (file-directory-p dir)
+                (dolist (f (directory-files dir t))
+                  (let ((fname (file-name-nondirectory f)))
+                    (unless (member fname '("." ".." "download"))
+                      ;; Skip SDK metadata files
+                      (unless (string-match-p "\\.js$" fname)
+                        (unless (member f daemon-files)
+                          (when (and (file-regular-p f)
+                                     (> (file-attribute-size (file-attributes f)) 1048576))
+                            (let* ((size (file-attribute-size (file-attributes f)))
+                                   (size-h (freebox-empv--format-size size)))
+                              (push `((name . ,fname)
+                                      (path . ,f)
+                                      (size . ,size)
+                                      (size_h . ,size-h)
+                                      (phase . "disk")
+                                      (magnet . "")
+                                      (source . "disk"))
+                                    results))))))))))))))
+    results))
+
+(defun freebox-empv--format-size (bytes)
+  "Format BYTES as human-readable string."
+  (cond
+   ((< bytes 1024) (format "%dB" bytes))
+   ((< bytes (* 1024 1024)) (format "%.1fKB" (/ bytes 1024.0)))
+   ((< bytes (* 1024 1024 1024)) (format "%.1fMB" (/ bytes (* 1024.0 1024.0))))
+   (t (format "%.1fGB" (/ bytes (* 1024.0 1024.0 1024.0))))))
+
 (defun freebox-empv-save-magnet-file ()
-  "Save the current magnet download to another directory.
-Prompts for a destination directory.  If the download is not yet
-complete, shows a warning instead."
+  "List all downloaded magnet files and save selected one to another directory.
+Shows files from both active daemon tasks and disk download directory.
+Files still downloading are marked with their progress."
   (interactive)
-  (if (not freebox-empv--xunlei-poll-task-id)
-      (message "FreeBox: no active magnet download")
-    (condition-case err
-        (let* ((result (freebox-empv--xunlei-send-raw
-                        `(("cmd" . "progress")
-                          ("task_id" . ,freebox-empv--xunlei-poll-task-id))))
-               (phase (alist-get 'status result))
-               (local-file (alist-get 'local_file result))
-               (error-msg (alist-get 'error result)))
-          (cond
-           ((or error-msg (string= phase "error"))
-            (message "FreeBox: cannot save — %s" (or error-msg "task failed")))
-           ((not (and local-file (file-exists-p local-file)))
-            (message "FreeBox: 资源尚未完成下载"))
-           (t
-            (let* ((dest-dir (read-directory-name "Save to: "))
-                   (filename (file-name-nondirectory local-file))
-                   (dest-path (expand-file-name filename dest-dir)))
-              (copy-file local-file dest-path t)
-              (message "FreeBox: saved to %s" dest-path)))))
-      (error
-       (message "FreeBox: failed to save — %s" err)))))
+  (let* ((all-files (freebox-empv--scan-downloads)))
+    (if (not all-files)
+        (message "FreeBox: 没有找到已下载的资源")
+      (let* ((candidates
+              (mapcar (lambda (f)
+                        (let* ((name (alist-get 'name f))
+                               (size-h (alist-get 'size_h f))
+                               (phase (alist-get 'phase f))
+                               (tag (cond
+                                     ((member phase '("downloading"
+                                                      "fetching_metadata"
+                                                      "creating_bt_task"))
+                                      " [下载中]")
+                                     ((string= phase "disk")
+                                      " [磁盘]")
+                                     ((string= phase "ready") "")
+                                     (t (format " [%s]" phase)))))
+                          (cons (format "%s  (%s)%s" name size-h tag)
+                                f)))
+                      all-files))
+             (choice (completing-read
+                      "FreeBox 下载资源: "
+                      (mapcar #'car candidates) nil t)))
+        (when-let* ((selected (cl-find choice candidates
+                                         :key #'car :test #'string=)))
+          (let* ((info (cdr selected))
+                 (phase (alist-get 'phase info))
+                 (local-file (alist-get 'path info))
+                 (name (alist-get 'name info)))
+            (cond
+             ((member phase '("fetching_metadata" "creating_bt_task"))
+              (message "FreeBox: 资源尚未完成下载 — %s" name))
+             ((not (file-exists-p local-file))
+              (message "FreeBox: 文件不存在 — %s" local-file))
+             (t
+              (let* ((dest-dir (read-directory-name
+                                (format "保存 %s 到: " name)))
+                     (filename (file-name-nondirectory local-file))
+                     (dest-path (expand-file-name filename dest-dir)))
+                (copy-file local-file dest-path t)
+                (message "FreeBox: 已保存到 %s" dest-path))))))))))
 
 (provide 'freebox-empv)
 ;;; freebox-empv.el ends here
