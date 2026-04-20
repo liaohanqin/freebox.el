@@ -207,6 +207,30 @@ class XunleiSDK:
         self._sdk.XLReleaseTask.restype = ctypes.c_int
         return self._sdk.XLReleaseTask(ctypes.c_ulong(task_id))
 
+    def bt_select_sub_task(self, task_id, file_indices):
+        """Select specific sub-files for download in a BT task.
+        task_id: BT task ID
+        file_indices: list of unsigned int file indices to select
+        Returns SDK result code (9000 = success)."""
+        n = len(file_indices)
+        arr = (ctypes.c_uint * n)(*file_indices)
+        self._bufs.append(arr)
+        self._sdk.XLBtSelectSubTask.argtypes = [ctypes.c_ulong, ctypes.c_void_p, ctypes.c_uint]
+        self._sdk.XLBtSelectSubTask.restype = ctypes.c_int
+        return self._sdk.XLBtSelectSubTask(ctypes.c_ulong(task_id), ctypes.cast(arr, ctypes.c_void_p), n)
+
+    def bt_deselect_sub_task(self, task_id, file_indices):
+        """Deselect specific sub-files in a BT task (stop downloading them).
+        task_id: BT task ID
+        file_indices: list of unsigned int file indices to deselect
+        Returns SDK result code (9000 = success)."""
+        n = len(file_indices)
+        arr = (ctypes.c_uint * n)(*file_indices)
+        self._bufs.append(arr)
+        self._sdk.XLBtDeselectSubTask.argtypes = [ctypes.c_ulong, ctypes.c_void_p, ctypes.c_uint]
+        self._sdk.XLBtDeselectSubTask.restype = ctypes.c_int
+        return self._sdk.XLBtDeselectSubTask(ctypes.c_ulong(task_id), ctypes.cast(arr, ctypes.c_void_p), n)
+
     VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.wmv', '.flv', '.mov', '.ts', '.m2ts'}
 
     def _parse_torrent_files(self, torrent_path):
@@ -229,6 +253,40 @@ class XunleiSDK:
                 if ext in self.VIDEO_EXTS:
                     result.append((i, filename, length))
             result.sort(key=lambda x: x[2], reverse=True)
+            return result
+        except Exception:
+            return []
+
+    def _get_torrent_file_count(self, torrent_path):
+        """Return the total number of files in a .torrent (including non-video).
+        Returns 0 on error or if bencodepy is unavailable."""
+        if not HAS_BENCODE:
+            return 0
+        try:
+            with open(torrent_path, 'rb') as f:
+                data = bencodepy.decode(f.read())
+            info = data[b'info']
+            files = info.get(b'files', [])
+            return len(files)
+        except Exception:
+            return 0
+
+    def _get_torrent_all_filenames(self, torrent_path):
+        """Return list of all filenames in a .torrent (including non-video).
+        Returns list of (index, filename) tuples.
+        Returns empty list on error or if bencodepy is unavailable."""
+        if not HAS_BENCODE:
+            return []
+        try:
+            with open(torrent_path, 'rb') as f:
+                data = bencodepy.decode(f.read())
+            info = data[b'info']
+            files = info.get(b'files', [])
+            result = []
+            for i, f in enumerate(files):
+                path = f.get(b'path', [])
+                filename = path[-1].decode('utf-8', errors='replace') if path else 'unknown'
+                result.append((i, filename))
             return result
         except Exception:
             return []
@@ -463,6 +521,31 @@ class XunleiSDK:
             return
 
         self.set_player_mode(bt_task_id, 1)
+
+        # Deselect all files then select only the target video file.
+        # XLCreateBtTask with file_indices doesn't reliably limit downloads
+        # (mFlag=5 may cause SDK to download all files regardless).
+        # Using XLBtDeselectSubTask + XLBtSelectSubTask ensures only the
+        # selected file is actually downloaded.
+        total_files = self._get_torrent_file_count(torrent_file)
+        if total_files > 1:
+            all_indices = list(range(total_files))
+            # Deselect all, then select only our target
+            self.bt_deselect_sub_task(bt_task_id, all_indices)
+            self.bt_select_sub_task(bt_task_id, [video_idx])
+
+            # Remove sparse file placeholders for non-selected files.
+            # SDK creates 0-byte sparse files for all torrent files on task
+            # creation, but we only want the selected video file on disk.
+            all_filenames = self._get_torrent_all_filenames(torrent_file)
+            for idx, fname in all_filenames:
+                if idx != video_idx:
+                    fpath = os.path.join(save_path, fname)
+                    try:
+                        if os.path.isfile(fpath) and os.stat(fpath).st_blocks == 0:
+                            os.remove(fpath)
+                    except OSError:
+                        pass
 
         with self._lock:
             if bt_task_id in self._tasks:
