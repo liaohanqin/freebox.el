@@ -216,34 +216,83 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
        (message "FreeBox: lost connection to Xunlei daemon")))))
 
 (defun freebox-empv--xunlei-select-file (progress-result)
-  "Present video file selection from PROGRESS-RESULT via completing-read.
-Sends the selected file index to the daemon and resumes progress polling."
+  "Present file selection from PROGRESS-RESULT in the echo area.
+User toggles items with number keys, confirms with RET, cancels with C-g.
+No buffer is created — purely echo-area based interaction."
   (let* ((video-files (append (alist-get 'video_files progress-result) nil))
          (task-id (alist-get 'task_id progress-result))
-         (candidates
-          (mapcar (lambda (vf)
-                    (let* ((name (alist-get 'name vf))
-                           (size-h (alist-get 'size_h vf))
-                           (idx (alist-get 'index vf))
-                           (display (format "%s  (%s)" name size-h)))
-                      (cons display idx)))
-                  video-files))
-         (choice (completing-read
-                  "Select video file: "
-                  (mapcar #'car candidates)
-                  nil t)))
-    (when-let* ((selected (cl-find choice candidates :key #'car :test #'string=)))
-      (let* ((file-index (cdr selected))
-             (sel-result (freebox-empv--xunlei-send-raw
-                          `(("cmd" . "select")
-                            ("task_id" . ,task-id)
-                            ("file_index" . ,file-index)))))
-        (if (let ((e (alist-get 'error sel-result))) (and e (not (string-empty-p e))))
-            (message "FreeBox: file selection failed — %s" (alist-get 'error sel-result))
-          (freebox-empv--xunlei-start-poll
-           (number-to-string task-id)
-           (or freebox-empv--xunlei-poll-title
-               (alist-get 'video_name sel-result))))))))
+         ;; Build items: (index name display checked-p)
+         (items (seq-map-indexed
+                 (lambda (vf i)
+                   (let* ((name (alist-get 'name vf))
+                          (size-h (alist-get 'size_h vf))
+                          (ftype (alist-get 'type vf))
+                          (idx (alist-get 'index vf))
+                          (tag (cond ((string= ftype "video") "视频")
+                                     ((string= ftype "subtitle") "字幕")
+                                     ((string= ftype "image") "图片")
+                                     (t "其他")))
+                          (display (format "%s %s (%s)" tag
+                                           (truncate-string-to-width name 40 nil nil "...")
+                                           size-h)))
+                     (list idx i display (string= ftype "video"))))
+                 video-files)))
+    (freebox-empv--select-loop items task-id)))
+
+(defun freebox-empv--select-loop (items task-id)
+  "Interactive selection loop. ITEMS is list of (index pos display checked-p).
+TASK-ID is the daemon task ID."
+  (let ((checked (mapcar (lambda (it) (nth 3 it)) items))
+        (n (length items)))
+    (catch 'done
+      (while t
+        ;; Render checkbox list in echo area
+        (let ((lines nil))
+          (dotimes (i n)
+            (let* ((it (nth i items))
+                   (chk (nth i checked))
+                   (mark (if chk "☑" "☐"))
+                   (display (nth 2 it)))
+              (push (format " %s %d)%s" mark (1+ i) display) lines)))
+          (message "%s\n  RET=确认 C-g=取消" (string-join (nreverse lines) "\n")))
+        ;; Read a key — read-event does not overwrite echo area
+        (let ((ev (read-event)))
+          (cond
+           ;; RET — confirm
+           ((or (eq ev 'return) (eq ev 13))
+            (let ((selected-indices
+                   (delq nil
+                         (seq-map-indexed
+                          (lambda (chk i)
+                            (when chk (car (nth i items))))
+                          checked))))
+              (if (not selected-indices)
+                  (message "FreeBox: no files selected")
+                (let ((sel-result (freebox-empv--xunlei-send-raw
+                                   `(("cmd" . "select")
+                                     ("task_id" . ,task-id)
+                                     ("file_indices" . ,selected-indices)))))
+                  (if (let ((e (alist-get 'error sel-result))) (and e (not (string-empty-p e))))
+                      (message "FreeBox: file selection failed — %s" (alist-get 'error sel-result))
+                    (freebox-empv--xunlei-start-poll
+                     (number-to-string task-id)
+                     (or freebox-empv--xunlei-poll-title
+                         (alist-get 'video_name sel-result)))))))
+            (throw 'done nil))
+           ;; C-g / ESC — cancel
+           ((or (eq ev 7) (eq ev 'escape))
+            (message "FreeBox: selection cancelled")
+            (throw 'done nil))
+           ;; Number key 1-9 — toggle
+           ((and (characterp ev)
+                 (memq ev '(?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9)))
+            (let ((idx (- ev ?1)))
+              (when (< idx n)
+                (setf (nth idx checked) (not (nth idx checked))))))
+           ;; 0 — toggle item 10 (if exists)
+           ((and (characterp ev) (eq ev ?0))
+            (when (> n 9)
+              (setf (nth 9 checked) (not (nth 9 checked)))))))))))
 
 (defun freebox-empv--xunlei-start-poll (task-id title)
   "Start polling for TASK-ID progress every 3 seconds.

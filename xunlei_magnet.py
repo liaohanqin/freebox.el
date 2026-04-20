@@ -232,10 +232,13 @@ class XunleiSDK:
         return self._sdk.XLBtDeselectSubTask(ctypes.c_ulong(task_id), ctypes.cast(arr, ctypes.c_void_p), n)
 
     VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.wmv', '.flv', '.mov', '.ts', '.m2ts'}
+    SUBTITLE_EXTS = {'.srt', '.ass', '.ssa', '.sub', '.sup', '.idx', '.vtt', '.lrc'}
+    IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
 
     def _parse_torrent_files(self, torrent_path):
-        """Parse a .torrent file to list all files with video extensions.
-        Returns list of (index, filename, size) sorted by size desc.
+        """Parse a .torrent file to list all files with type classification.
+        Returns list of (index, filename, size, file_type) sorted by size desc.
+        file_type is 'video', 'subtitle', 'image', or 'other'.
         """
         if not HAS_BENCODE:
             return []
@@ -251,7 +254,14 @@ class XunleiSDK:
                 filename = path[-1].decode('utf-8', errors='replace') if path else 'unknown'
                 ext = os.path.splitext(filename)[1].lower()
                 if ext in self.VIDEO_EXTS:
-                    result.append((i, filename, length))
+                    ftype = 'video'
+                elif ext in self.SUBTITLE_EXTS:
+                    ftype = 'subtitle'
+                elif ext in self.IMAGE_EXTS:
+                    ftype = 'image'
+                else:
+                    ftype = 'other'
+                result.append((i, filename, length, ftype))
             result.sort(key=lambda x: x[2], reverse=True)
             return result
         except Exception:
@@ -444,58 +454,63 @@ class XunleiSDK:
                         self._tasks[task_id]["error"] = "torrent_metadata_timeout"
                 return
 
-        # Step 3: Parse torrent to list video files
-        video_files = self._parse_torrent_files(torrent_file)
-        if not video_files:
+        # Step 3: Parse torrent to list video and subtitle files
+        parsed_files = self._parse_torrent_files(torrent_file)
+        if not parsed_files:
             with self._lock:
                 if task_id in self._tasks:
                     self._tasks[task_id]["phase"] = "error"
                     self._tasks[task_id]["error"] = "torrent_parse_failed"
             return
 
-        # Store torrent path and video file list
+        # Store torrent path and file list
         with self._lock:
             if task_id in self._tasks:
                 self._tasks[task_id]["torrent_file"] = torrent_file
                 self._tasks[task_id]["video_files"] = [
                     {"index": idx, "name": name, "size": size,
-                     "size_h": self._format_size(size)}
-                    for idx, name, size in video_files
+                     "size_h": self._format_size(size), "type": ftype}
+                    for idx, name, size, ftype in parsed_files
                 ]
 
-        # If only one video file, auto-select it
-        if len(video_files) == 1:
-            video_idx, video_name = video_files[0][0], video_files[0][1]
+        # Determine if user selection is needed
+        video_only = [f for f in parsed_files if f[3] == 'video']
+
+        # Auto-select only when there's exactly 1 file total and it's a video.
+        # Otherwise (multiple files, or non-video files present), let user choose.
+        if len(parsed_files) == 1 and video_only:
+            video_idx, video_name = video_only[0][0], video_only[0][1]
         else:
-            # Multiple video files — pause and wait for user selection
+            # Multiple files or subtitles present — let user choose
             with self._lock:
                 if task_id in self._tasks:
                     self._tasks[task_id]["phase"] = "needs_selection"
-                    self._tasks[task_id]["video_name"] = video_files[0][1]
+                    self._tasks[task_id]["video_name"] = video_only[0][1] if video_only else ""
             return
 
-        # Auto-selected single file — continue to create BT task
+        # Auto-selected single video file — continue to create BT task
         self._create_bt_and_wait(magnet_url, save_path, task_id, max_wait,
-                                 torrent_file, video_idx, video_name)
+                                 torrent_file, [video_idx], video_name)
 
     def _create_bt_and_wait(self, magnet_url, save_path, task_id, max_wait,
-                            torrent_file, video_idx, video_name):
-        """Create BT task for a selected video file and get streaming URL.
+                            torrent_file, file_indices, video_name):
+        """Create BT task for selected files and get streaming URL.
 
+        file_indices: list of file indices to download (video + optional subtitles).
+        The first video file in file_indices is used for xlairplay streaming.
         With XLSetPlayerMode enabled, the xlairplay proxy can stream immediately
-        from the SDK's download buffer. We don't wait for data on disk — just
-        get the URL and let mpv handle buffering.  A background thread tracks
-        actual download progress for status display.
+        from the SDK's download buffer.
         """
         with self._lock:
             if task_id in self._tasks:
                 self._tasks[task_id]["video_name"] = video_name
-                self._tasks[task_id]["video_index"] = video_idx
+                self._tasks[task_id]["video_index"] = file_indices[0]
+                self._tasks[task_id]["file_indices"] = file_indices
                 self._tasks[task_id]["phase"] = "creating_bt_task"
 
-        # Create BT task with selected video file index
+        # Create BT task with selected file indices
         bt_task_id, bt_code = self.create_bt_task(
-            torrent_file, save_path, [video_idx])
+            torrent_file, save_path, file_indices)
         if bt_code != 9000 or bt_task_id == 0:
             with self._lock:
                 if task_id in self._tasks:
@@ -511,6 +526,15 @@ class XunleiSDK:
                 self._aliases[task_id] = bt_task_id
                 task_id = bt_task_id
 
+        # Select only the target files BEFORE starting the task.
+        # XLCreateBtTask creates tasks with all files selected by default.
+        # Must deselect all files then select only the targets.
+        if self._get_torrent_file_count(torrent_file) > 1:
+            total_files = self._get_torrent_file_count(torrent_file)
+            all_indices = list(range(total_files))
+            self.bt_deselect_sub_task(bt_task_id, all_indices)
+            self.bt_select_sub_task(bt_task_id, file_indices)
+
         # Start BT download + enable streaming mode
         start_bt = self.start_task(bt_task_id)
         if start_bt != 9000:
@@ -521,31 +545,6 @@ class XunleiSDK:
             return
 
         self.set_player_mode(bt_task_id, 1)
-
-        # Deselect all files then select only the target video file.
-        # XLCreateBtTask with file_indices doesn't reliably limit downloads
-        # (mFlag=5 may cause SDK to download all files regardless).
-        # Using XLBtDeselectSubTask + XLBtSelectSubTask ensures only the
-        # selected file is actually downloaded.
-        total_files = self._get_torrent_file_count(torrent_file)
-        if total_files > 1:
-            all_indices = list(range(total_files))
-            # Deselect all, then select only our target
-            self.bt_deselect_sub_task(bt_task_id, all_indices)
-            self.bt_select_sub_task(bt_task_id, [video_idx])
-
-            # Remove sparse file placeholders for non-selected files.
-            # SDK creates 0-byte sparse files for all torrent files on task
-            # creation, but we only want the selected video file on disk.
-            all_filenames = self._get_torrent_all_filenames(torrent_file)
-            for idx, fname in all_filenames:
-                if idx != video_idx:
-                    fpath = os.path.join(save_path, fname)
-                    try:
-                        if os.path.isfile(fpath) and os.stat(fpath).st_blocks == 0:
-                            os.remove(fpath)
-                    except OSError:
-                        pass
 
         with self._lock:
             if bt_task_id in self._tasks:
@@ -577,7 +576,7 @@ class XunleiSDK:
                 # Set total_size from torrent info if available
                 if not self._tasks[bt_task_id].get("total_size"):
                     for vf in self._tasks[bt_task_id].get("video_files", []):
-                        if vf["index"] == video_idx:
+                        if vf["index"] == file_indices[0]:
                             self._tasks[bt_task_id]["total_size"] = vf["size"]
                             break
 
@@ -655,10 +654,13 @@ class XunleiSDK:
                         self._tasks[bt_task_id]["downloaded_h"] = self._format_size(downloaded)
                         return
 
-    def select_file(self, task_id, file_index):
-        """User selected a file from the list. Continue with BT task creation.
-        If the same file was previously selected and is ready, return it directly."""
+    def select_file(self, task_id, file_indices):
+        """User selected files from the list. Continue with BT task creation.
+        file_indices: list of file indices to download (video + optional subtitles)."""
         task_id = int(task_id)
+        if isinstance(file_indices, int):
+            file_indices = [file_indices]
+
         with self._lock:
             # Resolve alias
             real_id = self._aliases.get(task_id, task_id)
@@ -671,20 +673,22 @@ class XunleiSDK:
             return {"error": "task_not_awaiting_selection", "phase": info.get("phase")}
 
         video_files = info.get("video_files", [])
-        selected = None
-        for vf in video_files:
-            if vf["index"] == file_index:
-                selected = vf
-                break
-        if not selected:
-            return {"error": "invalid_file_index", "available": [vf["index"] for vf in video_files]}
+        # Validate all selected indices and find the primary video
+        selected_names = []
+        primary_video_name = None
+        for fi in file_indices:
+            found = None
+            for vf in video_files:
+                if vf["index"] == fi:
+                    found = vf
+                    break
+            if not found:
+                return {"error": "invalid_file_index", "available": [vf["index"] for vf in video_files]}
+            selected_names.append(found["name"])
+            if found.get("type") == "video" and primary_video_name is None:
+                primary_video_name = found["name"]
 
-        # If same file was previously downloaded and is ready, reuse it
-        if info.get("video_index") == file_index and info.get("phase") == "needs_selection" and info.get("url"):
-            with self._lock:
-                info["phase"] = "ready"
-                info["video_name"] = selected["name"]
-            return self._task_progress(task_id)
+        video_name = primary_video_name or selected_names[0]
 
         # Stop existing BT task before creating a new one
         # (SDK rejects XLCreateBtTask if a BT task already owns the save_path)
@@ -693,8 +697,9 @@ class XunleiSDK:
             # Clear the old URL so mpv won't use it
             info["url"] = ""
             info["phase"] = "creating_bt_task"
-            info["video_name"] = selected["name"]
-            info["video_index"] = file_index
+            info["video_name"] = video_name
+            info["video_index"] = file_indices[0]
+            info["file_indices"] = file_indices
 
         # Stop and release the old BT task (safe to call even if none exists)
         try:
@@ -703,17 +708,16 @@ class XunleiSDK:
         except Exception:
             pass
 
-        # Launch background thread to continue with selected file
+        # Launch background thread to continue with selected files
         torrent_file = info.get("torrent_file", "")
         save_path = info.get("save_path", "")
         magnet_url = info.get("magnet_url", "")
         max_wait = 180
-        video_name = selected["name"]
 
         t = threading.Thread(
             target=self._create_bt_and_wait,
             args=(magnet_url, save_path, task_id, max_wait,
-                  torrent_file, file_index, video_name),
+                  torrent_file, file_indices, video_name),
             daemon=True
         )
         t.start()
@@ -813,6 +817,7 @@ class XunleiSDK:
             torrent_file = info.get("torrent_file", "")
             video_index = info.get("video_index", 0)
             video_name = info.get("video_name", "")
+            file_indices = info.get("file_indices", [video_index])
             old_downloaded = info.get("downloaded", 0)
             old_downloaded_h = info.get("downloaded_h", "0.0B")
             old_total_size = info.get("total_size", 0)
@@ -841,6 +846,7 @@ class XunleiSDK:
                 "magnet_url": magnet_url,
                 "local_file": "",
                 "video_index": video_index,
+                "file_indices": file_indices,
                 "video_name": video_name,
                 "magnet_task_id": 0,
                 "phase": "creating_bt_task",
@@ -851,11 +857,11 @@ class XunleiSDK:
                 "video_files": old_video_files,
             }
 
-        # Launch background thread to create BT task with previously selected file
+        # Launch background thread to create BT task with previously selected files
         t = threading.Thread(
             target=self._create_bt_and_wait,
             args=(magnet_url, save_path, placeholder_id, 180,
-                  torrent_file, video_index, video_name),
+                  torrent_file, file_indices, video_name),
             daemon=True
         )
         t.start()
@@ -1029,8 +1035,12 @@ def _run_daemon(sdk):
                     _send_msg(conn, {"error": "task_id required"})
             elif cmd == "select":
                 task_id = msg.get("task_id", 0)
-                file_index = msg.get("file_index", 0)
-                _send_msg(conn, sdk.select_file(int(task_id), int(file_index)))
+                file_indices = msg.get("file_indices", msg.get("file_index", 0))
+                if isinstance(file_indices, list):
+                    file_indices = [int(x) for x in file_indices]
+                else:
+                    file_indices = int(file_indices)
+                _send_msg(conn, sdk.select_file(int(task_id), file_indices))
             elif cmd == "pause":
                 _send_msg(conn, sdk.pause_task(int(msg.get("task_id", 0))))
             elif cmd == "resume":
