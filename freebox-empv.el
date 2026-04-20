@@ -515,6 +515,7 @@ Return a list of alists: ((name . \"filename\") (path . \"/full/path\") (size . 
                    (magnet-url (alist-get 'magnet_url info))
                    (save-path (alist-get 'save_path info))
                    (current-index (alist-get 'video_index info))
+                   (file-indices (append (alist-get 'file_indices info) nil))
                    (downloaded (alist-get 'downloaded info))
                    (total-size (alist-get 'total_size info))
                    (downloaded-h (or (alist-get 'downloaded_h info) ""))
@@ -523,38 +524,38 @@ Return a list of alists: ((name . \"filename\") (path . \"/full/path\") (size . 
                                     (>= (or downloaded 0) total-size)))
                    (video-files (append (alist-get 'video_files info) nil)))
               (if video-files
-                  ;; Multi-file torrent: show each video file as a separate entry
+                  ;; Multi-file torrent: show only selected files
                   (dolist (vf video-files)
-                    (let* ((vf-name (alist-get 'name vf))
-                           (vf-index (alist-get 'index vf))
-                           (vf-size (alist-get 'size vf))
-                           (is-current (eq vf-index current-index))
-                           (vf-local (if is-current
-                                         (alist-get 'local_file info)
-                                       (concat (file-name-as-directory save-path) vf-name)))
-                           ;; Use daemon's per-file downloaded (st_blocks-based) when available
-                           (vf-downloaded (if is-current
-                                              (or downloaded 0)
-                                            (or (alist-get 'downloaded vf) 0)))
-                           (vf-downloaded-h (if is-current
-                                                downloaded-h
-                                              (or (alist-get 'downloaded_h vf) "0.0B")))
-                           (vf-complete (if is-current complete-p
-                                          (and vf-size (> vf-size 0)
-                                               (> vf-downloaded 0)
-                                               (>= vf-downloaded vf-size)))))
-                      (push `((name . ,vf-name)
-                              (path . ,vf-local)
-                              (size . ,vf-downloaded)
-                              (size_h . ,vf-downloaded-h)
-                              (total_size . ,vf-size)
-                              (complete . ,vf-complete)
-                              (phase . ,(if is-current phase "available"))
-                              (magnet . ,(or magnet-url ""))
-                              (source . "daemon")
-                              (task_id . ,(alist-get 'task_id info))
-                              (file_index . ,vf-index))
-                            daemon-items)))
+                    (let* ((vf-idx (alist-get 'index vf)))
+                      (when (or (not file-indices) (memq vf-idx file-indices))
+                        (let* ((vf-name (alist-get 'name vf))
+                               (vf-size (alist-get 'size vf))
+                               (is-current (eq vf-idx current-index))
+                               (vf-local (if is-current
+                                             (alist-get 'local_file info)
+                                           (concat (file-name-as-directory save-path) vf-name)))
+                               (vf-downloaded (if is-current
+                                                   (or downloaded 0)
+                                                 (or (alist-get 'downloaded vf) 0)))
+                               (vf-downloaded-h (if is-current
+                                                     downloaded-h
+                                                   (or (alist-get 'downloaded_h vf) "0.0B")))
+                               (vf-complete (if is-current complete-p
+                                              (and vf-size (> vf-size 0)
+                                                   (> vf-downloaded 0)
+                                                   (>= vf-downloaded vf-size)))))
+                          (push `((name . ,vf-name)
+                                  (path . ,vf-local)
+                                  (size . ,vf-downloaded)
+                                  (size_h . ,vf-downloaded-h)
+                                  (total_size . ,vf-size)
+                                  (complete . ,vf-complete)
+                                  (phase . ,(if is-current phase "available"))
+                                  (magnet . ,(or magnet-url ""))
+                                  (source . "daemon")
+                                  (task_id . ,(alist-get 'task_id info))
+                                  (file_index . ,vf-idx))
+                                daemon-items)))))
                 ;; Single-file or no video_files list
                 (let ((local-file (alist-get 'local_file info))
                       (video-name (or (alist-get 'video_name info) "")))
