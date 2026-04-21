@@ -220,9 +220,9 @@ Uses `call-process' with an inline Python script for reliable Unix socket I/O."
        (message "FreeBox: lost connection to Xunlei daemon")))))
 
 (defun freebox-empv--xunlei-select-file (progress-result)
-  "Present file selection from PROGRESS-RESULT via `completing-read'.
-Uses Vertico UI if available.  Select one file to play — subtitles with
-matching names are automatically included for download."
+  "Present file selection from PROGRESS-RESULT via `completing-read-multiple'.
+Uses Vertico UI if available.  Select one or more files — use TAB to complete
+each item, RET to confirm selection, comma to separate multiple items."
   (let* ((video-files (append (alist-get 'video_files progress-result) nil))
          (task-id (alist-get 'task_id progress-result))
          ;; Build candidates: (display . index)
@@ -238,40 +238,31 @@ matching names are automatically included for download."
                                       (t "其他")))
                            (display (format "%s %s (%s)" tag name size-h)))
                       (cons display idx)))
-                  video-files)))
-    (let ((chosen (completing-read
-                   "FreeBox 选择文件: "
-                   candidates nil t)))
-      (let* ((chosen-idx (cdr (assoc chosen candidates #'string=)))
-             (chosen-vf (cl-find chosen-idx video-files :key
-                                 (lambda (vf) (alist-get 'index vf))))
-             (chosen-name (and chosen-vf (alist-get 'name chosen-vf)))
-             ;; Auto-include matching subtitles (same basename, subtitle extension)
-             (chosen-base (and chosen-name
-                                (file-name-sans-extension chosen-name)))
-             (sub-indices
-              (delq nil
-                    (mapcar (lambda (vf)
-                              (when (and (string= (alist-get 'type vf) "subtitle")
-                                         chosen-base
-                                         (string= (file-name-sans-extension
-                                                   (alist-get 'name vf))
-                                                  chosen-base))
-                                (alist-get 'index vf)))
-                            video-files)))
-             (file-indices (cons chosen-idx (delq chosen-idx sub-indices))))
-        (if (not chosen-idx)
-            (message "FreeBox: 没有选中任何文件")
-          (let ((sel-result (freebox-empv--xunlei-send-raw
-                             `(("cmd" . "select")
-                               ("task_id" . ,task-id)
-                               ("file_indices" . ,file-indices)))))
-            (if (let ((e (alist-get 'error sel-result))) (and e (not (string-empty-p e))))
-                (message "FreeBox: 文件选择失败 — %s" (alist-get 'error sel-result))
-              (freebox-empv--xunlei-start-poll
-               (number-to-string task-id)
-               (or freebox-empv--xunlei-poll-title
-                   (alist-get 'video_name sel-result))))))))))
+                  video-files))
+         (candidate-names (mapcar #'car candidates)))
+    (let ((chosen (completing-read-multiple
+                   "FreeBox 选择文件 (, 分隔多选): "
+                   candidate-names nil t)))
+      (if (not chosen)
+          (message "FreeBox: 没有选中任何文件")
+        ;; Map chosen display strings back to torrent file indices
+        (let ((selected-indices
+               (delq nil
+                     (mapcar (lambda (c)
+                               (cdr (assoc c candidates #'string=)))
+                             chosen))))
+          (if (not selected-indices)
+              (message "FreeBox: 没有选中任何文件")
+            (let ((sel-result (freebox-empv--xunlei-send-raw
+                               `(("cmd" . "select")
+                                 ("task_id" . ,task-id)
+                                 ("file_indices" . ,selected-indices)))))
+              (if (let ((e (alist-get 'error sel-result))) (and e (not (string-empty-p e))))
+                  (message "FreeBox: 文件选择失败 — %s" (alist-get 'error sel-result))
+                (freebox-empv--xunlei-start-poll
+                 (number-to-string task-id)
+                 (or freebox-empv--xunlei-poll-title
+                     (alist-get 'video_name sel-result)))))))))))
 
 (defun freebox-empv--xunlei-start-poll (task-id title)
   "Start polling for TASK-ID progress every 3 seconds.
