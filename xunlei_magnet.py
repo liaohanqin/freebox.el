@@ -498,15 +498,23 @@ class XunleiSDK:
 
         file_indices: list of file indices to download (video + optional subtitles).
         The first video file in file_indices is used for xlairplay streaming.
-        With XLSetPlayerMode enabled, the xlairplay proxy can stream immediately
-        from the SDK's download buffer.
+        If no video file is selected, only downloads without streaming.
         """
+        # Check if any selected file is a video
+        has_video = False
         with self._lock:
             if task_id in self._tasks:
                 self._tasks[task_id]["video_name"] = video_name
                 self._tasks[task_id]["video_index"] = file_indices[0]
                 self._tasks[task_id]["file_indices"] = file_indices
                 self._tasks[task_id]["phase"] = "creating_bt_task"
+                for fi in file_indices:
+                    for vf in self._tasks[task_id].get("video_files", []):
+                        if vf["index"] == fi and vf.get("type") == "video":
+                            has_video = True
+                            break
+                    if has_video:
+                        break
 
         # Create BT task with selected file indices
         bt_task_id, bt_code = self.create_bt_task(
@@ -542,6 +550,13 @@ class XunleiSDK:
                 if bt_task_id in self._tasks:
                     self._tasks[bt_task_id]["phase"] = "error"
                     self._tasks[bt_task_id]["error"] = f"start_bt_task_failed: {start_bt}"
+            return
+
+        # No video file selected — download only, no streaming
+        if not has_video:
+            with self._lock:
+                if bt_task_id in self._tasks:
+                    self._tasks[bt_task_id]["phase"] = "download_only"
             return
 
         self.set_player_mode(bt_task_id, 1)
