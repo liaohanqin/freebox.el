@@ -351,10 +351,12 @@ is not the current buffer (e.g. after C-x 4 b)."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET")       #'freebox-gallery-open-detail)
-    (define-key map (kbd "j")         #'freebox-gallery-next)
-    (define-key map (kbd "k")         #'freebox-gallery-prev)
-    (define-key map (kbd "TAB")       #'freebox-gallery-next)
-    (define-key map (kbd "<backtab>") #'freebox-gallery-prev)
+    (define-key map (kbd "h")         #'freebox-gallery-left)
+    (define-key map (kbd "j")         #'freebox-gallery-down)
+    (define-key map (kbd "k")         #'freebox-gallery-up)
+    (define-key map (kbd "l")         #'freebox-gallery-right)
+    (define-key map (kbd "TAB")       #'freebox-gallery-right)
+    (define-key map (kbd "<backtab>") #'freebox-gallery-left)
     (define-key map (kbd "n")         #'freebox-gallery-next-page)
     (define-key map (kbd "p")         #'freebox-gallery-prev-page)
     (define-key map (kbd "v")         #'freebox-gallery-goto-vod-list)
@@ -365,8 +367,10 @@ is not the current buffer (e.g. after C-x 4 b)."
   "Major mode for FreeBox poster gallery.
 \\<freebox-gallery-mode-map>
 \\[freebox-gallery-open-detail] - Open VOD detail
-\\[freebox-gallery-next] - Next poster
-\\[freebox-gallery-prev] - Previous poster
+\\[freebox-gallery-left] - Previous poster (left)
+\\[freebox-gallery-right] - Next poster (right)
+\\[freebox-gallery-up] - Previous row
+\\[freebox-gallery-down] - Next row
 \\[freebox-gallery-next-page] - Next page
 \\[freebox-gallery-prev-page] - Previous page
 \\[quit-window] - Close gallery"
@@ -422,7 +426,7 @@ is not the current buffer (e.g. after C-x 4 b)."
     (insert "\n"
             (propertize (make-string 50 ?─) 'face 'shadow)
             "\n"
-            (propertize "[RET] 查看详情  [j/k] 下/上一项  [n/p] 下/上一页  [v] 列表  [q] 返回"
+            (propertize "[RET] 查看详情  [h/j/k/l] 导航  [n/p] 翻页  [v] 列表  [q] 返回"
                         'face 'font-lock-comment-face)
             "\n")
     ;; Move to first poster
@@ -458,6 +462,120 @@ is not the current buffer (e.g. after C-x 4 b)."
             (let ((start (previous-single-property-change pos 'freebox-vod-id)))
               (goto-char (or start (point-min))))
           (goto-char pos))))))
+
+(defun freebox-gallery--current-vod-start ()
+  "Return start position of the vod-id property region at or after point.
+Returns nil if no vod-id is found."
+  (let ((pos (point)))
+    (cond
+     ((get-text-property pos 'freebox-vod-id)
+      ;; Walk backwards to the exact first character of the property region.
+      (let ((start pos))
+        (while (and (> start (point-min))
+                    (get-text-property (1- start) 'freebox-vod-id))
+          (setq start (1- start)))
+        start))
+     (t
+      (let ((next (next-single-property-change pos 'freebox-vod-id)))
+        (and next (get-text-property next 'freebox-vod-id) next))))))
+
+(defun freebox-gallery--vod-starts-in-line (line-start)
+  "Return sorted list of vod-id start positions in line starting at LINE-START."
+  (let ((result nil)
+        (in-prop nil))
+    (save-excursion
+      (goto-char line-start)
+      (let ((end (line-end-position)))
+        (while (< (point) end)
+          (let ((has-prop (get-text-property (point) 'freebox-vod-id)))
+            (when (and has-prop (not in-prop))
+              (push (point) result))
+            (setq in-prop has-prop))
+          (forward-char 1))))
+    (nreverse result)))
+
+(defun freebox-gallery--index-of (item list)
+  "Return 0-based index of ITEM in LIST, or nil."
+  (let ((idx 0))
+    (catch 'found
+      (dolist (el list)
+        (when (eql el item)
+          (throw 'found idx))
+        (setq idx (1+ idx)))
+      nil)))
+
+(defun freebox-gallery--col-index-at-pos (pos)
+  "Return 0-based column index of vod-id at POS within its line."
+  (let* ((line-start (save-excursion (goto-char pos) (line-beginning-position)))
+         (starts (freebox-gallery--vod-starts-in-line line-start)))
+    (freebox-gallery--index-of pos starts)))
+
+(defun freebox-gallery--find-poster-row (direction)
+  "Find the next or previous line containing vod-id properties.
+DIRECTION is `next' or `prev'.
+Returns the line-beginning-position of that row, or nil."
+  (save-excursion
+    (let ((found nil))
+      (while (and (not found)
+                  (if (eq direction 'next)
+                      (zerop (forward-line 1))
+                    (and (zerop (forward-line -1))
+                         (>= (point) (point-min)))))
+        (when (freebox-gallery--vod-starts-in-line (line-beginning-position))
+          (setq found (line-beginning-position))))
+      found)))
+
+(defun freebox-gallery-left ()
+  "Move to the previous poster in the same row."
+  (interactive)
+  (let ((start (freebox-gallery--current-vod-start)))
+    (if (not start)
+        (message "FreeBox: no poster here.")
+      (let* ((line-start (save-excursion (goto-char start) (line-beginning-position)))
+             (starts (freebox-gallery--vod-starts-in-line line-start))
+             (idx (freebox-gallery--index-of start starts)))
+        (if (and idx (> idx 0))
+            (goto-char (nth (1- idx) starts))
+          (message "FreeBox: already at first column."))))))
+
+(defun freebox-gallery-right ()
+  "Move to the next poster in the same row."
+  (interactive)
+  (let ((start (freebox-gallery--current-vod-start)))
+    (if (not start)
+        (message "FreeBox: no poster here.")
+      (let* ((line-start (save-excursion (goto-char start) (line-beginning-position)))
+             (starts (freebox-gallery--vod-starts-in-line line-start))
+             (idx (freebox-gallery--index-of start starts)))
+        (if (and idx (< (1+ idx) (length starts)))
+            (goto-char (nth (1+ idx) starts))
+          (message "FreeBox: already at last column."))))))
+
+(defun freebox-gallery-up ()
+  "Move to the poster in the same column of the previous row."
+  (interactive)
+  (let* ((start (freebox-gallery--current-vod-start))
+         (idx (and start (freebox-gallery--col-index-at-pos start)))
+         (prev-row (and start (freebox-gallery--find-poster-row 'prev))))
+    (if (not (and idx prev-row))
+        (message "FreeBox: already at first row.")
+      (let ((prev-starts (freebox-gallery--vod-starts-in-line prev-row)))
+        (if (< idx (length prev-starts))
+            (goto-char (nth idx prev-starts))
+          (message "FreeBox: no poster in that column."))))))
+
+(defun freebox-gallery-down ()
+  "Move to the poster in the same column of the next row."
+  (interactive)
+  (let* ((start (freebox-gallery--current-vod-start))
+         (idx (and start (freebox-gallery--col-index-at-pos start)))
+         (next-row (and start (freebox-gallery--find-poster-row 'next))))
+    (if (not (and idx next-row))
+        (message "FreeBox: already at last row.")
+      (let ((next-starts (freebox-gallery--vod-starts-in-line next-row)))
+        (if (< idx (length next-starts))
+            (goto-char (nth idx next-starts))
+          (message "FreeBox: no poster in that column."))))))
 
 (defun freebox-gallery-open-detail ()
   "Open detail page for the poster at point."
@@ -573,7 +691,7 @@ Each cell shows the poster above its truncated title."
         (insert "\n"
                 (propertize (make-string 50 ?─) 'face 'shadow)
                 "\n"
-                (propertize "[RET] 查看详情  [j/k] 下/上一项  [n/p] 下/上一页  [v] 列表  [q] 返回"
+                (propertize "[RET] 查看详情  [h/j/k/l] 导航  [n/p] 翻页  [v] 列表  [q] 返回"
                             'face 'font-lock-comment-face)
                 "\n")
         ;; Move to first poster
