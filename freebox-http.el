@@ -139,6 +139,20 @@ CALLBACK is called with (ERROR PLAYINFO)."
       ,@(when client-id `((clientId . ,client-id))))
     callback))
 
+(defun freebox-http-resolve-share (source-key flag share-link &optional client-id callback)
+  "Resolve SHARE-LINK for FLAG under SOURCE-KEY.
+Optional CLIENT-ID selects which client config to use.
+CALLBACK is called with (ERROR RESULT)."
+  (when (functionp client-id)
+    (setq callback client-id)
+    (setq client-id nil))
+  (freebox-http--request "resolve-share"
+    `((sourceKey . ,source-key)
+      (flag . ,flag)
+      (shareLink . ,share-link)
+      ,@(when client-id `((clientId . ,client-id))))
+    callback))
+
 ;;; ─── Server management ────────────────────────────────────────────────────
 
 (defcustom freebox-http-server-script nil

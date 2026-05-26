@@ -553,6 +553,42 @@ DIRECT-URL is a fallback if the API fails."
                      (freebox-empv-play-url url title))
             (message "FreeBox: could not resolve URL for \"%s\"." title)))))))
 
+(defun freebox-ui--pick-episode (vod vod-id flag url-str)
+  "Let user pick an episode from URL-STR under FLAG, then play it.
+VOD is the full VOD object (needed for :back recursion)."
+  (let* ((ep-parts (and url-str (split-string url-str "#")))
+         (candidates
+          (and ep-parts
+               (delq nil
+                     (mapcar (lambda (part)
+                               (when (string-match "^\\(.*?\\)\\$\\(.*\\)$" part)
+                                 (cons (match-string 1 part)
+                                       (match-string 2 part))))
+                             ep-parts))))
+         (cands-with-back (cons (cons freebox-ui--back-label :back) candidates)))
+    (if (not candidates)
+        (message "FreeBox: no episodes under [%s]." flag)
+      (let* ((selected-ep
+              (freebox-ui--completing-read
+               (format "Episode (%d): " (length candidates))
+               cands-with-back))
+             (selected-val (and selected-ep
+                                (cdr (assoc selected-ep cands-with-back)))))
+        (cond
+         ((null selected-val) nil) ; C-g: cancel, v-cursor stays at vod-detail
+         ((eq selected-val :back)
+          ;; Explicit 返回: back to flag selection
+          (freebox-ui--select-episode vod vod-id))
+         (t
+          ;; Real selection: record episode node, then play
+          (freebox-ui--save-v-cursor 'episode
+                                     freebox-ui-current-source
+                                     vod-id
+                                     flag)
+          (freebox-ui--resolve-and-play
+           freebox-ui-current-source flag selected-val
+           selected-val selected-ep)))))))
+
 (defun freebox-ui--select-episode (vod vod-id)
   "Let user pick a play-flag and episode from VOD, then play it.
 Data structure: urlBean.infoList = [{flag, urls}]
@@ -580,43 +616,25 @@ so next v reopens this detail page."
           ;; Explicit 返回: go back to vod-list
           (freebox-ui--with-source #'freebox-ui--pick-category))
          (t
-          ;; --- Episode selection ---
+          ;; --- Resolve or use cached episodes ---
           (let* ((info (cl-find selected-flag info-list
                                 :test #'equal
                                 :key (lambda (i) (freebox-ui--jget i 'flag))))
-                 (url-str  (and info (freebox-ui--jget info 'urls)))
-                 (ep-parts (and url-str (split-string url-str "#")))
-                 (candidates
-                  (and ep-parts
-                       (delq nil
-                             (mapcar (lambda (part)
-                                       (when (string-match "^\\(.*?\\)\\$\\(.*\\)$" part)
-                                         (cons (match-string 1 part)
-                                               (match-string 2 part))))
-                                     ep-parts))))
-                 (cands-with-back (cons (cons freebox-ui--back-label :back) candidates)))
-            (if (not candidates)
-                (message "FreeBox: no episodes under [%s]." selected-flag)
-              (let* ((selected-ep
-                      (freebox-ui--completing-read
-                       (format "Episode (%d): " (length candidates))
-                       cands-with-back))
-                     (selected-val (and selected-ep
-                                        (cdr (assoc selected-ep cands-with-back)))))
-                (cond
-                 ((null selected-val) nil) ; C-g: cancel, v-cursor stays at vod-detail
-                 ((eq selected-val :back)
-                  ;; Explicit 返回: back to flag selection
-                  (freebox-ui--select-episode vod vod-id))
-                 (t
-                  ;; Real selection: record episode node, then play
-                  (freebox-ui--save-v-cursor 'episode
-                                             freebox-ui-current-source
-                                             vod-id
-                                             selected-flag)
-                  (freebox-ui--resolve-and-play
-                   freebox-ui-current-source selected-flag selected-val
-                   selected-val selected-ep))))))))))))
+                 (url-str  (and info (freebox-ui--jget info 'urls))))
+            (if (and url-str (string-match "RESOLVE:\\(.+\\)" url-str))
+                ;; Delayed resolution: fetch real episodes from backend
+                (progn
+                  (freebox-ui--loading (format "resolving %s" selected-flag))
+                  (freebox-http-resolve-share
+                   freebox-ui-current-source selected-flag
+                   (match-string 1 url-str) freebox-ui-current-client-id
+                   (lambda (err data)
+                     (if err
+                         (freebox-ui--error err)
+                       (let ((real-urls (and data (alist-get 'urls data))))
+                         (freebox-ui--pick-episode vod vod-id selected-flag real-urls))))))
+              ;; Already resolved: proceed directly
+              (freebox-ui--pick-episode vod vod-id selected-flag url-str)))))))))
 
 ;;; --- Menu Persistence --------------------------------------------------------
 
