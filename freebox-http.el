@@ -28,14 +28,15 @@
   "Get KEY (string or symbol) from OBJ returned by json-read (alist with symbol keys)."
   (alist-get (if (symbolp key) key (intern key)) obj))
 
-(defun freebox-http--request (endpoint params callback)
+(defun freebox-http--request (endpoint params callback &optional timeout)
   "Make HTTP GET request to ENDPOINT with PARAMS.
-CALLBACK is called with (ERROR DATA)."
+CALLBACK is called with (ERROR DATA).
+Optional TIMEOUT overrides `freebox-http-timeout' (useful for long-poll)."
   (request (format "%s/%s" freebox-http-url endpoint)
     :type "GET"
     :params params
     :parser 'json-read
-    :timeout freebox-http-timeout
+    :timeout (or timeout freebox-http-timeout)
     :success (cl-function
               (lambda (&key data &allow-other-keys)
                 (let* ((code   (freebox-http--jget data 'code))
@@ -153,6 +154,35 @@ CALLBACK is called with (ERROR RESULT)."
       ,@(when client-id `((clientId . ,client-id))))
     callback))
 
+(defun freebox-http-get-qr-login (drive-type &optional client-id callback)
+  "Get QR code login URL for DRIVE-TYPE (quark/uc/bd).
+Optional CLIENT-ID selects which client config to use.
+CALLBACK is called with (ERROR RESULT)."
+  (when (functionp client-id)
+    (setq callback client-id)
+    (setq client-id nil))
+  (freebox-http--request "qr-login"
+    `((type . ,drive-type)
+      ,@(when client-id `((clientId . ,client-id))))
+    callback))
+
+(defun freebox-http-poll-qr-status (drive-type token &optional client-id callback)
+  "Poll QR code login status for DRIVE-TYPE (quark/uc/bd) with TOKEN.
+Optional CLIENT-ID selects which client config to use.
+CALLBACK is called with (ERROR RESULT).
+Result data has: (status . \"pending\"|\"success\"|\"failed\"|\"expired\")
+BD uses 45s timeout for baidu unicast long-poll, others use default."
+  (when (functionp client-id)
+    (setq callback client-id)
+    (setq client-id nil))
+  (let ((timeout (if (string= drive-type "bd") 45 nil)))
+    (freebox-http--request "qr-status"
+      `((type . ,drive-type)
+        (token . ,token)
+        ,@(when client-id `((clientId . ,client-id))))
+      callback
+      timeout)))
+
 ;;; ─── Server management ────────────────────────────────────────────────────
 
 (defcustom freebox-http-server-script nil
@@ -170,6 +200,16 @@ When nil, auto-start is disabled and the server must be started manually."
 (defvar freebox-http--server-process nil
   "The FreeBox server process managed by Emacs, or nil.")
 
+(defvar freebox-http--proxy-process nil
+  "The lu-proxy-server process managed by Emacs, or nil.")
+
+(defcustom freebox-http-proxy-server-path
+  (expand-file-name "lu-proxy-server-linux-amd64" "~/TV/")
+  "Path to the lu-proxy-server binary.
+When non-nil, this proxy server is started automatically before FreeBox."
+  :type '(choice (const :tag "Disabled" nil) file)
+  :group 'freebox-http)
+
 (defun freebox-http--server-running-p ()
   "Return t if FreeBox server responds with HTTP 200 at `freebox-http-url'/clients."
   (condition-case nil
@@ -185,12 +225,25 @@ When nil, auto-start is disabled and the server must be started manually."
 
 (defun freebox-http-start-server ()
   "Start the FreeBox backend in headless mode.
+Also starts the lu-proxy-server on port 12345 for video streaming.
 Requires `freebox-http-server-script' to be set (path to gradlew).
 The process is started in the gradlew directory with `run --args=--headless'.
 Output is collected in the *freebox-server* buffer."
   (interactive)
   (unless freebox-http-server-script
     (user-error "FreeBox: freebox-http-server-script is not configured"))
+  ;; Start proxy server if configured and not already running
+  (when (and freebox-http-proxy-server-path
+             (file-executable-p freebox-http-proxy-server-path)
+             (not (and freebox-http--proxy-process
+                       (process-live-p freebox-http--proxy-process))))
+    (message "FreeBox: starting proxy server (port 12345)...")
+    (setq freebox-http--proxy-process
+          (make-process
+           :name    "freebox-proxy"
+           :buffer  "*freebox-proxy*"
+           :command (list freebox-http-proxy-server-path)
+           :noquery t)))
   (let* ((script  (expand-file-name freebox-http-server-script))
          ;; gradlew must be run from the project root directory
          (default-directory (file-name-directory script)))
@@ -208,8 +261,14 @@ Output is collected in the *freebox-server* buffer."
     freebox-http--server-process))
 
 (defun freebox-http-stop-server ()
-  "Stop the FreeBox backend process managed by Emacs."
+  "Stop the FreeBox backend and proxy server managed by Emacs."
   (interactive)
+  ;; Stop proxy server
+  (when (and freebox-http--proxy-process
+             (process-live-p freebox-http--proxy-process))
+    (delete-process freebox-http--proxy-process)
+    (setq freebox-http--proxy-process nil))
+  ;; Stop FreeBox server
   (if (and freebox-http--server-process
            (process-live-p freebox-http--server-process))
       (progn

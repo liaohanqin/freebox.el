@@ -84,7 +84,11 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
      (("r" freebox-http-start-server "Start server")
       ("k" freebox-http-stop-server  "Stop server"))
      "Other"
-     (("?" freebox-help "Help")))))
+     (("?" freebox-help "Help"))
+     "Login"
+     (("Q" freebox-qr-login-quark "Quark扫码")
+      ("U" freebox-qr-login-uc    "UC扫码")
+      ("B" freebox-qr-login-bd    "百度扫码")))))
 
 ;;; --- Main entry point --------------------------------------------------------
 
@@ -113,7 +117,11 @@ Restores previous menu state and displays current selections in title."
      (("r" freebox-http-start-server "Start server")
       ("k" freebox-http-stop-server  "Stop server"))
      "Other"
-     (("?" freebox-help "Help"))))
+     (("?" freebox-help "Help"))
+     "Login"
+     (("Q" freebox-qr-login-quark "Quark扫码")
+      ("U" freebox-qr-login-uc    "UC扫码")
+      ("B" freebox-qr-login-bd    "百度扫码"))))
   (freebox-menu/body))
 
 ;;; --- Interactive commands ----------------------------------------------------
@@ -174,7 +182,40 @@ Restores to the deepest saved node: vod-list page, category, or source selection
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  s=search  v=resume  o=open-url  S=save  r=start  k=stop  q=quit"))
+   "FreeBox: x=client  y=source  z=category  s=search  v=resume  o=open-url  S=save  r=start  k=stop  Q=Quark  U=UC  B=百度  q=quit"))
+
+;;;###autoload
+(defun freebox-qr-login-quark ()
+  "Start QR code login for Quark cloud drive."
+  (interactive)
+  (freebox-http-ensure-server
+   (lambda ()
+     (freebox-ui--start-qr-login
+      "quark" nil nil
+      (lambda ()
+        (message "FreeBox: Quark 扫码完成！请重新播放视频"))))))
+
+;;;###autoload
+(defun freebox-qr-login-uc ()
+  "Start QR code login for UC cloud drive."
+  (interactive)
+  (freebox-http-ensure-server
+   (lambda ()
+     (freebox-ui--start-qr-login
+      "uc" nil nil
+      (lambda ()
+        (message "FreeBox: UC 扫码完成！请重新播放视频"))))))
+
+;;;###autoload
+(defun freebox-qr-login-bd ()
+  "Start QR code login for Baidu cloud drive."
+  (interactive)
+  (freebox-http-ensure-server
+   (lambda ()
+     (freebox-ui--start-qr-login
+      "bd" nil nil
+      (lambda ()
+        (message "FreeBox: 百度网盘 扫码完成！请重新播放视频"))))))
 
 (provide 'freebox-commands)
 ;;; freebox-commands.el ends here

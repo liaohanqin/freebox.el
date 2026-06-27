@@ -549,13 +549,231 @@ DIRECT-URL is a fallback if the API fails."
                         final-url
                       direct-url)))
           (if url
-              (progn (message "FreeBox: playing \"%s\"" title)
-                     (freebox-empv-play-url url title))
+              (if (freebox-ui--error-url-p url)
+                  ;; 播放 URL 返回错误，检测是否需要登录
+                  (let ((err-msg (freebox-ui--extract-error-message url))
+                        (login-type (freebox-ui--infer-login-type play-flag)))
+                    (message "FreeBox: [%s] %s" play-flag err-msg)
+                    (when (and login-type
+                               (y-or-n-p (format "是否扫码登录%s？"
+                                                 (pcase login-type
+                                                   ("quark" "夸克网盘")
+                                                   ("uc" "UC网盘")
+                                                   ("bd" "百度网盘")
+                                                   (_ login-type)))))
+                      (freebox-ui--start-qr-login
+                       login-type play-flag nil
+                       (lambda ()
+                         (freebox-ui--resolve-and-play
+                          source-key play-flag episode-url direct-url title)))))
+                (progn (message "FreeBox: playing \"%s\"" title)
+                       (freebox-empv-play-url url title)))
             (message "FreeBox: could not resolve URL for \"%s\"." title)))))))
 
-(defun freebox-ui--pick-episode (vod vod-id flag url-str)
+(defun freebox-ui--error-url-p (url)
+  "Return non-nil if URL is an error placeholder returned by the spider.
+Error URLs start with \"http://error.com/\"."
+  (and (stringp url) (string-prefix-p "http://error.com/" url)))
+
+(defun freebox-ui--extract-error-message (url)
+  "Extract human-readable error message from an error URL.
+\"http://error.com/网盘未配置\" -> \"网盘未配置\"
+\"http://error.com/解析失败: cookie为空\" -> \"解析失败: cookie为空\""
+  (if (string-match "^http://error\\.com/\\(.+\\)" url)
+      (match-string 1 url)
+    url))
+
+(defun freebox-ui--infer-login-type (flag)
+  "Infer QR login type from play FLAG. Return nil if unsupported.
+Matches quark/uc/bd identifiers in the flag string."
+  (cond ((string-match-p "quark\\|夸克" flag) "quark")
+        ((string-match-p "uc\\|UC" flag) "uc")
+        ((string-match-p "bd\\|百度\\|BD原画" flag) "bd")
+        (t nil)))
+
+;; ── QR 码登录流程 ──
+
+(defvar freebox-ui--qr-poll-timer nil
+  "Timer for polling QR login status.")
+
+(defun freebox-ui--cancel-qr-poll ()
+  "Cancel QR login polling timer."
+  (when (timerp freebox-ui--qr-poll-timer)
+    (cancel-timer freebox-ui--qr-poll-timer))
+  (setq freebox-ui--qr-poll-timer nil))
+
+(defun freebox-ui--qr-login-callback (drive-type retry-fn err data)
+  "Callback for QR login: handle QR URL response.
+DRIVE-TYPE and RETRY-FN are partially-applied values.
+DATA contains url, token, and image flag. When image is non-nil,
+display the QR image inside Emacs; otherwise use qrencode to
+generate a PNG from the jump URL (for quark) and display it."
+  (if err
+      (freebox-ui--error err)
+    (let ((qr-url (and data (alist-get 'url data)))
+          (qr-token (and data (alist-get 'token data)))
+          (is-image (and data (alist-get 'image data))))
+      (if (or (not qr-url) (not qr-token))
+          (message "FreeBox: 获取 %s 二维码失败" drive-type)
+        (progn
+          ;; 复制 URL 到剪贴板
+          (kill-new qr-url)
+          (if is-image
+              ;; 图片 URL：用 freebox-image-get 下载并在 Emacs 内显示
+              (freebox-image-get
+               qr-url
+               (lambda (path)
+                 (if path
+                     (freebox-ui--show-qr-image-in-buffer drive-type path qr-token retry-fn)
+                   ;; 下载失败回退浏览器
+                   (progn
+                     (condition-case nil (browse-url qr-url) (error nil))
+                     (freebox-ui--show-qr-text-buffer drive-type qr-url)
+                     (freebox-ui--poll-qr-status drive-type qr-token retry-fn)))))
+            ;; 非图片（夸克跳转 URL）：用 qrencode 生成 PNG 在 Emacs 内显示
+            (freebox-ui--show-quark-qr-image drive-type qr-url qr-token retry-fn)))))))
+
+(defun freebox-ui--show-qr-text-buffer (drive-type qr-url)
+  "Show QR URL as clickable text in *FreeBox QR Login* buffer (fallback)."
+  (with-help-window "*FreeBox QR Login*"
+    (with-current-buffer "*FreeBox QR Login*"
+      (insert (format "请用 %s App 扫描以下二维码登录:\n\n"
+                      (pcase drive-type
+                        ("quark" "夸克网盘") ("uc" "UC网盘")
+                        ("bd" "百度网盘") (_ (upcase drive-type)))))
+      (insert-button qr-url
+                     'action (lambda (_) (browse-url qr-url))
+                     'follow-link t)
+      (insert "\n\n二维码已自动在浏览器中打开，如果未打开请点击上方链接\n")
+      (insert "\nURL 已复制到剪贴板，也可手动访问\n\n")
+      (insert (format "登录后会自动继续 (轮询中: %s)..." drive-type))))
+  (message "FreeBox: %s 二维码已发送到浏览器，请用手机 App 扫码 (URL已复制)"
+           (pcase drive-type
+             ("quark" "夸克网盘") ("uc" "UC网盘")
+             ("bd" "百度网盘") (_ (upcase drive-type)))))
+
+(defun freebox-ui--show-qr-image-in-buffer (drive-type path token retry-fn)
+  "Show QR image at PATH in *FreeBox QR Login* buffer and start polling.
+DRIVE-TYPE is quark/uc/bd. TOKEN is the QR session token.
+RETRY-FN is called after successful login."
+  (with-help-window "*FreeBox QR Login*"
+    (with-current-buffer "*FreeBox QR Login*"
+      (insert (format "请用 %s App 扫描二维码登录:\n\n"
+                      (pcase drive-type
+                        ("quark" "夸克网盘") ("uc" "UC网盘")
+                        ("bd" "百度网盘") (_ (upcase drive-type)))))
+      (condition-case nil
+          (let ((img (create-image path nil nil :max-width 400 :max-height 400 :ascent 'center)))
+            (insert-image img "[QR]"))
+        (error
+         (insert (format "[二维码图片: %s]\n" path))))
+      (insert "\n\n扫码后自动继续，无需操作...\n")))
+  (message "FreeBox: %s 二维码已显示，请用手机 App 扫码"
+           (pcase drive-type
+             ("quark" "夸克网盘") ("uc" "UC网盘")
+             ("bd" "百度网盘") (_ (upcase drive-type))))
+  (freebox-ui--poll-qr-status drive-type token retry-fn))
+
+(defun freebox-ui--show-quark-qr-image (drive-type url token retry-fn)
+  "Use qrencode to generate a PNG from URL and display in Emacs.
+Falls back to browse-url if qrencode is unavailable or fails."
+  (if (executable-find "qrencode")
+      (let ((png-file (expand-file-name
+                       (format "/tmp/freebox-%s-qr.png" drive-type))))
+        (condition-case nil
+            (let ((ret (call-process "qrencode" nil nil nil
+                                     "-o" png-file "-s" "10" "-l" "H" url)))
+              (if (eq ret 0)
+                  (freebox-ui--show-qr-image-in-buffer drive-type png-file token retry-fn)
+                ;; qrencode 失败，回退浏览器
+                (progn
+                  (condition-case nil (browse-url url) (error nil))
+                  (freebox-ui--show-qr-text-buffer drive-type url)
+                  (freebox-ui--poll-qr-status drive-type token retry-fn))))
+          (error
+           (progn
+             (condition-case nil (browse-url url) (error nil))
+             (freebox-ui--show-qr-text-buffer drive-type url)
+             (freebox-ui--poll-qr-status drive-type token retry-fn)))))
+    ;; qrencode 未安装，回退浏览器
+    (progn
+      (condition-case nil (browse-url url) (error nil))
+      (freebox-ui--show-qr-text-buffer drive-type url)
+      (freebox-ui--poll-qr-status drive-type token retry-fn))))
+
+(defun freebox-ui--start-qr-login (drive-type flag share-link retry-fn)
+  "Start QR code login flow for DRIVE-TYPE (quark/uc/bd)."
+  (freebox-ui--loading (format "获取 %s 二维码" drive-type))
+  (freebox-http-get-qr-login
+   drive-type freebox-ui-current-client-id
+   (apply-partially #'freebox-ui--qr-login-callback drive-type retry-fn)))
+
+(defun freebox-ui--qr-timer-fn (drive-type token retry-fn)
+  "Timer function for QR status polling.
+Called by run-at-time timer."
+  (freebox-http-poll-qr-status
+   drive-type token freebox-ui-current-client-id
+   (apply-partially #'freebox-ui--qr-poll-callback drive-type retry-fn)))
+
+(defun freebox-ui--qr-poll-callback (drive-type retry-fn err data)
+  "Callback for QR status polling.
+If login succeeded, cancel timer and retry resolve."
+  (if err
+      (progn
+        (freebox-ui--cancel-qr-poll)
+        (freebox-ui--error err))
+    (let ((status (and data (alist-get 'status data)))
+          (msg (and data (alist-get 'message data))))
+      (cond
+       ((string= status "success")
+        (freebox-ui--cancel-qr-poll)
+        (message "FreeBox: %s 登录成功！正在刷新..." drive-type)
+        (when (buffer-live-p (get-buffer "*FreeBox QR Login*"))
+          (kill-buffer "*FreeBox QR Login*"))
+        (funcall retry-fn))
+       ((string= status "failed")
+        (freebox-ui--cancel-qr-poll)
+        (message "FreeBox: %s 登录失败 - %s" drive-type (or msg "")))
+       ((string= status "expired")
+        (freebox-ui--cancel-qr-poll)
+        (message "FreeBox: %s 二维码已过期，请重新操作" drive-type))
+       ((string= status "pending")
+        (message "FreeBox: 等待 %s App 扫码..." drive-type))
+       (t
+        (message "FreeBox: %s 扫码状态: %s" drive-type (or status "unknown")))))))
+
+(defun freebox-ui--poll-qr-status (drive-type token retry-fn)
+  "Poll QR login status, retry resolve after success.
+BD uses 30-second interval (unicast is long-poll), others 3 seconds."
+  (freebox-ui--cancel-qr-poll)
+  (let ((interval (if (string= drive-type "bd") 30 3)))
+    (setq freebox-ui--qr-poll-timer
+          (run-at-time interval interval
+                       (apply-partially #'freebox-ui--qr-timer-fn
+                                        drive-type token retry-fn))))
+  ;; 立即轮询一次
+  (freebox-http-poll-qr-status
+   drive-type token freebox-ui-current-client-id
+   (apply-partially #'freebox-ui--qr-poll-callback drive-type retry-fn)))
+
+(defun freebox-ui--resolve-after-qr-login (vod vod-id selected-flag share-link)
+  "Retry resolveShare for FLAG after QR login.
+Resolves SHARE-LINK and shows episodes."
+  (freebox-ui--loading (format "重新解析 %s" selected-flag))
+  (freebox-http-resolve-share
+   freebox-ui-current-source selected-flag share-link freebox-ui-current-client-id
+   (lambda (err data)
+     (if err
+         (freebox-ui--error err)
+       (let ((real-urls (and data (alist-get 'urls data))))
+         (if (or (not real-urls) (string-empty-p real-urls))
+             (message "FreeBox: [%s] 仍无法解析，请检查网盘配置" selected-flag)
+           (freebox-ui--pick-episode vod vod-id selected-flag real-urls nil)))))))
+
+(defun freebox-ui--pick-episode (vod vod-id flag url-str &optional share-link)
   "Let user pick an episode from URL-STR under FLAG, then play it.
-VOD is the full VOD object (needed for :back recursion)."
+VOD is the full VOD object (needed for :back recursion).
+SHARE-LINK is the original share URL, used for retry after QR login."
   (let* ((ep-parts (and url-str (split-string url-str "#")))
          (candidates
           (and ep-parts
@@ -567,7 +785,34 @@ VOD is the full VOD object (needed for :back recursion)."
                              ep-parts))))
          (cands-with-back (cons (cons freebox-ui--back-label :back) candidates)))
     (if (not candidates)
-        (message "FreeBox: no episodes under [%s]." flag)
+        ;; Check if url-str is an error URL (from failed resolveShare)
+        (if (freebox-ui--error-url-p url-str)
+            (let ((err-msg (freebox-ui--extract-error-message url-str)))
+              (message "FreeBox: [%s] %s" flag err-msg)
+              ;; 如果是"网盘未配置"，提供扫码登录选项
+              (let ((login-type (freebox-ui--infer-login-type flag)))
+                (if (and login-type
+                         (string-match-p "网盘未配置\\|未配置" err-msg)
+                         share-link)
+                    (when (y-or-n-p (format "是否扫码登录%s？"
+                                            (pcase login-type
+                                              ("quark" "夸克网盘")
+                                              ("uc" "UC网盘")
+                                              ("bd" "百度网盘")
+                                              (_ login-type))))
+                      (freebox-ui--start-qr-login
+                       login-type flag share-link
+                       (apply-partially #'freebox-ui--resolve-after-qr-login
+                                        vod vod-id flag share-link)))
+                  (when login-type
+                    (message "FreeBox: 可按 %s 菜单键扫码登录%s"
+                             (upcase (substring login-type 0 1))
+                             (pcase login-type
+                               ("quark" "夸克网盘")
+                               ("uc" "UC网盘")
+                               ("bd" "百度网盘")
+                               (_ login-type)))))))
+          (message "FreeBox: [%s] 无可播放剧集" flag))
       (let* ((selected-ep
               (freebox-ui--completing-read
                (format "Episode (%d): " (length candidates))
@@ -623,18 +868,20 @@ so next v reopens this detail page."
                  (url-str  (and info (freebox-ui--jget info 'urls))))
             (if (and url-str (string-match "RESOLVE:\\(.+\\)" url-str))
                 ;; Delayed resolution: fetch real episodes from backend
-                (progn
+                (let ((share-link (match-string 1 url-str)))
                   (freebox-ui--loading (format "resolving %s" selected-flag))
                   (freebox-http-resolve-share
                    freebox-ui-current-source selected-flag
-                   (match-string 1 url-str) freebox-ui-current-client-id
+                   share-link freebox-ui-current-client-id
                    (lambda (err data)
                      (if err
                          (freebox-ui--error err)
                        (let ((real-urls (and data (alist-get 'urls data))))
-                         (freebox-ui--pick-episode vod vod-id selected-flag real-urls))))))
+                         (if (or (not real-urls) (string-empty-p real-urls))
+                             (message "FreeBox: [%s] 解析失败，请检查网盘配置" selected-flag)
+                           (freebox-ui--pick-episode vod vod-id selected-flag real-urls share-link)))))))
               ;; Already resolved: proceed directly
-              (freebox-ui--pick-episode vod vod-id selected-flag url-str)))))))))
+              (freebox-ui--pick-episode vod vod-id selected-flag url-str nil)))))))))
 
 ;;; --- Menu Persistence --------------------------------------------------------
 
