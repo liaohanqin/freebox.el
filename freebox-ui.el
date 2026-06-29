@@ -53,6 +53,12 @@
 (defvar freebox-ui-current-category-name nil
   "Display name of the currently selected FreeBox category.")
 
+(defvar freebox-ui-current-live-client-id nil
+  "ID of the currently selected FreeBox live TV client (SINGLE_LIVE).")
+
+(defvar freebox-ui-current-live-client-name nil
+  "Display name of the currently selected FreeBox live TV client.")
+
 ;;; --- Initialization ----------------------------------------------------------
 
 (defun freebox-ui-init ()
@@ -63,13 +69,17 @@
         (source-key  (freebox-persist-get-source-key))
         (source-name (freebox-persist-get-source-name))
         (cat-tid     (freebox-persist-get-category-tid))
-        (cat-name    (freebox-persist-get-category-name)))
+        (cat-name    (freebox-persist-get-category-name))
+        (live-id     (freebox-persist-get 'live-client-id))
+        (live-name   (freebox-persist-get 'live-client-name)))
     (setq freebox-ui-current-client-id    client-id
           freebox-ui-current-client-name  client-name
           freebox-ui-current-source       source-key
           freebox-ui-current-source-name  source-name
           freebox-ui-current-category-tid  cat-tid
-          freebox-ui-current-category-name cat-name)))
+          freebox-ui-current-category-name cat-name
+          freebox-ui-current-live-client-id   live-id
+          freebox-ui-current-live-client-name live-name)))
 
 ;;; --- Internal helpers --------------------------------------------------------
 
@@ -960,6 +970,167 @@ to the nearest valid parent (category -> source -> client)."
 
         (t
          (freebox-ui--with-source #'freebox-ui--pick-category)))))))
+
+;;; --- Live TV ------------------------------------------------------------------
+
+(defun freebox-ui-select-live-client ()
+  "Interactively select a FreeBox live TV client (SINGLE_LIVE source).
+Saves selection to persistent state.  Equivalent of `freebox-select-client'
+for live TV."
+  (interactive)
+  (freebox-http-ensure-server
+   (lambda ()
+     (freebox-ui--loading "fetching live TV sources")
+     (freebox-http-get-live-clients
+      (lambda (err clients)
+        (if err
+            (freebox-ui--error err)
+          (if (not clients)
+              (message "FreeBox: 没有直播源。请在 FreeBox 添加 SINGLE_LIVE 客户端。")
+            (let ((picked (freebox-ui--pick-live-client-from-list clients)))
+              (when picked
+                (freebox-ui--save-live-client (car picked) (cdr picked))
+                (message "FreeBox: 直播源 -> [%s]" (cdr picked)))))))))))
+
+(defun freebox-ui--pick-live-client-from-list (clients)
+  "Prompt user to pick from CLIENTS list (live TV).
+Returns (ID . NAME) cons, or nil if cancelled."
+  (let* ((items (freebox-ui--vec->list clients))
+         (candidates (mapcar (lambda (c)
+                               (cons (or (freebox-ui--jget c 'name)
+                                         (freebox-ui--jget c 'id))
+                                     (freebox-ui--jget c 'id)))
+                             items))
+         (selected-name (freebox-ui--completing-read
+                         "FreeBox -- Select live TV source: " candidates)))
+    (when selected-name
+      (cons (cdr (assoc selected-name candidates)) selected-name))))
+
+(defun freebox-ui--save-live-client (id name)
+  "Save live TV client selection (ID, NAME) to state."
+  (setq freebox-ui-current-live-client-id   id
+        freebox-ui-current-live-client-name name)
+  (freebox-persist-set 'live-client-id id)
+  (freebox-persist-set 'live-client-name name))
+
+(defun freebox-ui--with-live-client (fn)
+  "Ensure a live TV client is selected, then call FN with client-id.
+First tries persisted selection, then prompts user."
+  (if freebox-ui-current-live-client-id
+      (funcall fn freebox-ui-current-live-client-id
+               freebox-ui-current-live-client-name)
+    (freebox-ui--loading "fetching live TV sources")
+    (freebox-http-get-live-clients
+     (lambda (err clients)
+       (if err
+           (freebox-ui--error err)
+         (if (not clients)
+             (message "FreeBox: 没有直播源。请在 FreeBox 添加 SINGLE_LIVE 客户端。")
+           (let* ((items (freebox-ui--vec->list clients))
+                  (picked (if (= (length items) 1)
+                              (let* ((c (car items)))
+                                (cons (freebox-ui--jget c 'id)
+                                      (freebox-ui--jget c 'name)))
+                            (freebox-ui--pick-live-client-from-list clients))))
+             (when picked
+               (freebox-ui--save-live-client (car picked) (cdr picked))
+               (message "FreeBox: 直播源 -> [%s]" (cdr picked))
+               (funcall fn (car picked) (cdr picked))))))))))
+
+(defun freebox-ui-live ()
+  "Browse and play FreeBox live TV channels.
+Uses the selected live TV client if set, otherwise prompts to select one."
+  (freebox-http-ensure-server
+   (lambda () (freebox-ui--with-live-client #'freebox-ui--live-load-channels))))
+
+(defun freebox-ui--live-load-channels (client-id client-name)
+  "Fetch channel groups for CLIENT-ID (displayed as CLIENT-NAME) and show groups."
+  (freebox-ui--loading (format "加载直播源 [%s]" client-name))
+  (freebox-http-get-live-channels
+   client-id
+   (lambda (err groups)
+     (if err
+         (freebox-ui--error err)
+       (let* ((items (freebox-ui--vec->list groups)))
+         (if (not items)
+             (message "FreeBox: 直播源 [%s] 没有频道" client-name)
+           (freebox-ui--live-pick-group items client-id client-name)))))))
+
+(defun freebox-ui--live-pick-group (groups client-id client-name)
+  "Let user pick a channel group from GROUPS.
+GROUPS is the list of LiveChannelGroup objects from the backend.
+CLIENT-ID and CLIENT-NAME are for re-entry (back to client selection)."
+  (let* ((candidates (mapcar (lambda (g)
+                               (let ((title (or (freebox-ui--jget g 'title) "未分组"))
+                                     (size (length (freebox-ui--vec->list
+                                                    (freebox-ui--jget g 'channels)))))
+                                 (cons (format "%s (%d)" title size) g)))
+                             groups))
+         (all-cands (cons (cons freebox-ui--back-label :back) candidates))
+         (selected-name (freebox-ui--completing-read
+                         (format "FreeBox [%s] 分组: " client-name) all-cands)))
+    (cond
+     ((null selected-name) nil)            ; C-g
+     ((eq (cdr (assoc selected-name all-cands)) :back)
+      (freebox-ui-select-live-client))     ; back to live source selection
+     (t
+      (let ((group (cdr (assoc selected-name all-cands))))
+        (freebox-ui--live-pick-channel group groups client-id client-name))))))
+
+(defun freebox-ui--live-pick-channel (group groups client-id client-name)
+  "Let user pick a channel from GROUP, then a line if multiple, then play.
+GROUPS, CLIENT-ID, CLIENT-NAME for re-entry."
+  (let* ((channels (freebox-ui--vec->list (freebox-ui--jget group 'channels)))
+         (candidates (mapcar (lambda (ch)
+                               (cons (or (freebox-ui--jget ch 'title) "?") ch))
+                             channels))
+         (all-cands (cons (cons freebox-ui--back-label :back) candidates))
+         (selected-name (freebox-ui--completing-read
+                         "FreeBox 频道: " all-cands)))
+    (cond
+     ((null selected-name) nil)            ; C-g
+     ((eq (cdr (assoc selected-name all-cands)) :back)
+      (freebox-ui--live-pick-group groups client-id client-name)) ; back to groups
+     (t
+      (let* ((channel (cdr (assoc selected-name all-cands)))
+             (lines (freebox-ui--vec->list (freebox-ui--jget channel 'lines)))
+             (channel-title (freebox-ui--jget channel 'title)))
+        (cond
+         ((not lines)
+          (message "FreeBox: 频道 [%s] 没有可播放线路" channel-title))
+         ((= (length lines) 1)
+          (freebox-ui--live-play (car lines) channel-title))
+         (t
+          (freebox-ui--live-pick-line lines channel-title groups client-id client-name))))))))
+
+(defun freebox-ui--live-pick-line (lines channel-title groups client-id client-name)
+  "Let user pick a line from LINES, then play.
+CHANNEL-TITLE is the channel name for display.
+GROUPS, CLIENT-ID, CLIENT-NAME for re-entry via back."
+  (let* ((candidates (mapcar (lambda (l)
+                               (cons (or (freebox-ui--jget l 'title) "线路") l))
+                             lines))
+         (all-cands (append
+                     (list (cons freebox-ui--back-label :back))
+                     candidates))
+         (selected-name (freebox-ui--completing-read
+                         (format "FreeBox [%s] 线路: " channel-title) all-cands)))
+    (cond
+     ((null selected-name) nil)            ; C-g
+     ((eq (cdr (assoc selected-name all-cands)) :back)
+      ;; back: re-enter channel picker (need group context — rebuild from groups)
+      ;; Simplified: go back to group selection.
+      (freebox-ui--live-pick-group groups client-id client-name))
+     (t
+      (freebox-ui--live-play (cdr (assoc selected-name all-cands)) channel-title)))))
+
+(defun freebox-ui--live-play (line title)
+  "Play live channel LINE (with url field) under TITLE."
+  (let ((url (freebox-ui--jget line 'url)))
+    (if (or (not url) (string-empty-p url))
+        (message "FreeBox: 频道 [%s] 线路无 URL" title)
+      (message "FreeBox: 播放直播 [%s]" title)
+      (freebox-empv-play-url url title))))
 
 (provide 'freebox-ui)
 ;;; freebox-ui.el ends here

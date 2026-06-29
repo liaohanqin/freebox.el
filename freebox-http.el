@@ -59,6 +59,19 @@ Optional TIMEOUT overrides `freebox-http-timeout' (useful for long-poll)."
 CALLBACK is called with (ERROR CLIENTS)."
   (freebox-http--request "clients" nil callback))
 
+(defun freebox-http-get-live-clients (callback)
+  "Get list of SINGLE_LIVE (live TV) client configurations from FreeBox.
+CALLBACK is called with (ERROR CLIENTS)."
+  (freebox-http--request "live/clients" nil callback))
+
+(defun freebox-http-get-live-channels (client-id callback)
+  "Get live TV channel groups for CLIENT-ID from FreeBox.
+CALLBACK is called with (ERROR GROUPS).
+Uses 45s timeout — live sources can be large."
+  (freebox-http--request "live/channels"
+    `((clientId . ,client-id))
+    callback 45))
+
 (defun freebox-http-get-sources (&optional client-id callback)
   "Get list of video sources from FreeBox.
 Optional CLIENT-ID selects which client config to use.

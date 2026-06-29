@@ -12,9 +12,11 @@
 ;;   x  Select client    -- Change client config (video source JSON)
 ;;   y  Select source    -- Change current source within client
 ;;   z  Select category  -- Select a category within current source
+;;   l  Select live src  -- Select live TV source (SINGLE_LIVE)
 ;;   s  Search videos    -- Full-text search
 ;;   v  Resume last pos  -- Resume from last remembered navigation node
 ;;   o  Open URL         -- Play a URL directly (supports magnet links)
+;;   L  Live TV          -- Browse and play live TV channels
 ;;   S  Save magnet file -- Save downloaded magnet file to another directory
 ;;   r  Start server     -- Start FreeBox backend
 ;;   k  Stop server      -- Stop managed backend
@@ -74,11 +76,13 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
     ("Configure"
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
-      ("z" freebox-select-category "Select category"))
+      ("z" freebox-select-category "Select category")
+      ("l" freebox-select-live-client "Select live source"))
      "Browse"
      (("s" freebox-search  "Search videos")
       ("v" freebox-resume  "Resume last pos")
       ("o" freebox-open-url "Open URL")
+      ("L" freebox-live "Live TV")
       ("S" freebox-save-magnet-file "Save magnet file"))
      "Server"
      (("r" freebox-http-start-server "Start server")
@@ -107,11 +111,13 @@ Restores previous menu state and displays current selections in title."
     ("Configure"
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
-      ("z" freebox-select-category "Select category"))
+      ("z" freebox-select-category "Select category")
+      ("l" freebox-select-live-client "Select live source"))
      "Browse"
      (("s" freebox-search  "Search videos")
       ("v" freebox-resume  "Resume last pos")
       ("o" freebox-open-url "Open URL")
+      ("L" freebox-live "Live TV")
       ("S" freebox-save-magnet-file "Save magnet file"))
      "Server"
      (("r" freebox-http-start-server "Start server")
@@ -131,6 +137,12 @@ Restores previous menu state and displays current selections in title."
   "Select a FreeBox client configuration (video source JSON URL)."
   (interactive)
   (freebox-ui-select-client))
+
+;;;###autoload
+(defun freebox-select-live-client ()
+  "Select a FreeBox live TV client (SINGLE_LIVE source URL)."
+  (interactive)
+  (freebox-ui-select-live-client))
 
 ;;;###autoload
 (defun freebox-select-source ()
@@ -172,6 +184,12 @@ Restores to the deepest saved node: vod-list page, category, or source selection
       (freebox-empv-play-url url))))
 
 ;;;###autoload
+(defun freebox-live ()
+  "Browse and play FreeBox live TV channels."
+  (interactive)
+  (freebox-ui-live))
+
+;;;###autoload
 (defun freebox-save-magnet-file ()
   "Save the current magnet download to another directory."
   (interactive)
@@ -182,7 +200,7 @@ Restores to the deepest saved node: vod-list page, category, or source selection
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  s=search  v=resume  o=open-url  S=save  r=start  k=stop  Q=Quark  U=UC  B=百度  q=quit"))
+   "FreeBox: x=client  y=source  z=category  l=live-src  s=search  v=resume  o=open-url  L=live  S=save  r=start  k=stop  Q=Quark  U=UC  B=百度  q=quit"))
 
 ;;;###autoload
 (defun freebox-qr-login-quark ()
