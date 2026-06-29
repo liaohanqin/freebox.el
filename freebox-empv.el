@@ -329,7 +329,7 @@ and actual mpv exit (persistent stopped)."
 ;; ── Playback ──
 
 (defun freebox-empv-play-url (url &optional title)
-  "Play URL in mpv via empv, replacing current item and keeping old in playlist.
+  "Play URL in mpv via empv, appending to the playlist and switching to it.
 URL is the media URL to play.  TITLE is optional media title.
 Magnet links are played via Xunlei SDK daemon + xlairplay HTTP proxy."
   (cond
@@ -337,23 +337,8 @@ Magnet links are played via Xunlei SDK daemon + xlairplay HTTP proxy."
     (freebox-empv-play-magnet url title))
    ((not (fboundp 'empv-play))
     (error "empv package not found or empv-play is not bound"))
-   ((empv--running?)
-    (empv--send-command
-     '(get_property path)
-     (lambda (cur-path)
-       (let ((old-path (when (and cur-path (stringp cur-path)
-                                  (not (string-empty-p cur-path)))
-                         cur-path)))
-         (empv--send-command `(loadfile ,url replace) nil)
-         (when title
-           (empv--send-command `(set_property media-title ,title) nil))
-         (when old-path
-           (run-at-time 0.5 nil
-                        (lambda (p)
-                          (empv--send-command `(loadfile ,p append) nil))
-                        old-path))))))
    (t
-    (empv-start url))))
+    (freebox-empv--play-mpv url title))))
 
 (defun freebox-empv-play-magnet (url &optional title)
   "Play magnet URL via Xunlei SDK daemon + xlairplay HTTP proxy.
@@ -411,27 +396,48 @@ URL is the magnet link.  TITLE is optional display name."
 
 (defun freebox-empv--play-mpv (url &optional title)
   "Play URL in mpv via empv, with optional TITLE.
-Handles both running and not-running mpv cases, with playlist preservation."
+Insert the new item right after the currently playing one and switch
+to it, preserving the rest of the playlist.
+
+Example: playlist is [A, B, C] with B currently playing.  Playing D
+yields [A, B, D, C] and switches to D.
+
+Previous attempts and why they failed:
+- `empv-play' (loadfile append + get_property playlist-count +
+  playlist-play-index (1- count)): races — playlist-count can be
+  reported before the append lands, so (1- count) points at the OLD
+  last item (C), not the new one (D).
+- `append-play' flag: mpv 0.37 only starts the new item when NOTHING
+  is currently playing; silently no-ops while a video is running.
+- `playlist-clear' + append + playlist-next: clobbers the existing
+  playlist, losing items the user wants to keep.
+
+This implementation mirrors `empv-enqueue-next' but also switches
+playback: read playlist-pos (idx) and playlist-count (len) BEFORE
+appending, append the new item (it lands at index `len'), move it to
+`idx+1' via playlist-move, then playlist-play-index `idx+1'.  All
+property reads happen up front via `empv--let-properties', so there is
+no race between append and the count query."
   (cond
    ((not (fboundp 'empv-play))
     (error "empv package not found"))
    ((empv--running?)
-    (empv--send-command
-     '(get_property path)
-     (lambda (cur-path)
-       (let ((old-path (when (and cur-path (stringp cur-path)
-                                  (not (string-empty-p cur-path)))
-                         cur-path)))
-         (empv--send-command `(loadfile ,url replace) nil)
-         (when title
-           (empv--send-command `(set_property media-title ,title) nil))
-         (when old-path
-           (run-at-time 0.5 nil
-                        (lambda (p)
-                          (empv--send-command `(loadfile ,p append) nil))
-                        old-path))))))
+    (empv--let-properties '(playlist-pos playlist-count)
+      (let* ((idx .playlist-pos)
+             (len .playlist-count)
+             (target (if (numberp idx) (1+ idx) 0))
+             ;; New item appends at the end, i.e. index `len'.
+             (new-idx (if (numberp len) len 0)))
+        (empv--cmd 'loadfile (list url 'append)
+          (empv--cmd 'playlist-move (list new-idx target)
+            (empv--cmd 'playlist-play-index target
+              (empv--cmd 'set_property '(pause :json-false)
+                (when title
+                  (empv--send-command `(set_property media-title ,title) nil)))))))))
    (t
-    (empv-start url))))
+    (empv-start url)
+    (when title
+      (empv--send-command `(set_property media-title ,title) nil)))))
 
 ;; ── Auto cleanup old downloads ──
 
