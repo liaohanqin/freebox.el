@@ -94,12 +94,22 @@
 (defun freebox-ui--completing-read (prompt candidates &optional require-match)
   "Like `completing-read' but return nil silently on C-g (quit).
 PROMPT and CANDIDATES are passed to `completing-read'.
-REQUIRE-MATCH defaults to t."
-  (condition-case nil
-      (let ((result (completing-read prompt candidates nil
-                                     (if (eq require-match nil) nil t))))
-        (if (string-empty-p result) nil result))
-    (quit nil)))
+REQUIRE-MATCH defaults to t.
+
+When called from a hydra head, suppress the on-exit callback so the
+lv hint window stays visible, and re-activate the hydra after the
+minibuffer exits so the user can continue pressing hydra keys."
+  (let ((was-hydra-active (and (boundp 'hydra-curr-map) hydra-curr-map))
+        (result
+         (condition-case nil
+             (let ((r (completing-read prompt candidates nil
+                                        (if (eq require-match nil) nil t))))
+               (if (string-empty-p r) nil r))
+           (quit nil))))
+    (when (and was-hydra-active (not hydra-curr-map)
+               (fboundp 'freebox-menu/body))
+      (freebox-menu/body))
+    result))
 
 (defun freebox-ui--jget (obj key)
   "Get KEY (symbol) from OBJ which may be an alist returned by json-read."
@@ -313,16 +323,21 @@ Auto-starts the backend if `freebox-http-server-script' is configured."
 
 (defun freebox-ui--do-search (source-key)
   "Prompt for a keyword and search in SOURCE-KEY."
-  (let ((keyword (condition-case nil
-                     (read-string
-                      (format "FreeBox search [%s]: "
-                              (or freebox-ui-current-source-name source-key)))
-                   (quit nil))))
-    (when (and keyword (not (string-empty-p keyword)))
-      (freebox-ui--loading (format "searching \"%s\"" keyword))
-      (freebox-http-search source-key keyword freebox-ui-current-client-id
-        (lambda (err data)
-          (if err
+  (let ((was-hydra-active (and (boundp 'hydra-curr-map) hydra-curr-map)))
+    (setq hydra-curr-on-exit nil)
+    (let ((keyword (condition-case nil
+                       (read-string
+                        (format "FreeBox search [%s]: "
+                                (or freebox-ui-current-source-name source-key)))
+                     (quit nil))))
+      (when (and was-hydra-active (not hydra-curr-map)
+                 (fboundp 'freebox-menu/body))
+        (freebox-menu/body))
+      (when (and keyword (not (string-empty-p keyword)))
+        (freebox-ui--loading (format "searching \"%s\"" keyword))
+        (freebox-http-search source-key keyword freebox-ui-current-client-id
+          (lambda (err data)
+            (if err
               (freebox-ui--error err)
             (let* ((movie  (freebox-ui--jget data 'movie))
                    (items  (freebox-ui--vec->list
@@ -346,7 +361,7 @@ Auto-starts the backend if `freebox-http-server-script' is configured."
                        (selected-id (and selected-name
                                          (cdr (assoc selected-name candidates)))))
                   (when selected-id
-                    (freebox-ui-show-detail selected-id)))))))))))
+                    (freebox-ui-show-detail selected-id))))))))))))
 
 ;;; --- Category browse ---------------------------------------------------------
 
