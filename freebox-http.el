@@ -298,7 +298,8 @@ Output is collected in the *freebox-server* buffer."
   "Interactively ask the user for the FreeBox launcher script path.
 Saves the chosen path to `freebox-http-server-script' persistently via
 `customize-save-variable' so the prompt only appears once."
-  (let* ((default (expand-file-name freebox-http--server-script-default))
+  (let* ((hydra-curr-on-exit nil)
+         (default (expand-file-name freebox-http--server-script-default))
          (chosen  (read-file-name
                    "FreeBox launcher script: "
                    (file-name-directory default)

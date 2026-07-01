@@ -94,9 +94,15 @@
 (defun freebox-ui--completing-read (prompt candidates &optional require-match)
   "Like `completing-read' but return nil silently on C-g (quit).
 PROMPT and CANDIDATES are passed to `completing-read'.
-REQUIRE-MATCH defaults to t."
+REQUIRE-MATCH defaults to t.
+
+When called from a (possibly async) hydra head, suppress the hydra
+on-exit callback so the lv hint window stays visible during
+minibuffer interaction -- mirroring the behavior of synchronous
+hydras like `empv-hydra'."
   (condition-case nil
-      (let ((result (completing-read prompt candidates nil
+      (let ((hydra-curr-on-exit nil)
+            (result (completing-read prompt candidates nil
                                      (if (eq require-match nil) nil t))))
         (if (string-empty-p result) nil result))
     (quit nil)))
@@ -313,7 +319,8 @@ Auto-starts the backend if `freebox-http-server-script' is configured."
 
 (defun freebox-ui--do-search (source-key)
   "Prompt for a keyword and search in SOURCE-KEY."
-  (let ((keyword (condition-case nil
+  (let ((hydra-curr-on-exit nil)
+        (keyword (condition-case nil
                      (read-string
                       (format "FreeBox search [%s]: "
                               (or freebox-ui-current-source-name source-key)))

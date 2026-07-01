@@ -71,8 +71,7 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
   (pretty-hydra-define freebox-menu
     (:title (format "%s" (freebox--format-menu-title))
      :color red
-     :quit-key "q"
-     :foreign-keys run)
+     :quit-key "q")
     ("Configure"
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
@@ -106,8 +105,7 @@ Restores previous menu state and displays current selections in title."
   (pretty-hydra-define freebox-menu
     (:title (format "%s" (freebox--format-menu-title))
      :color red
-     :quit-key "q"
-     :foreign-keys run)
+     :quit-key "q")
     ("Configure"
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
@@ -179,7 +177,8 @@ Restores to the deepest saved node: vod-list page, category, or source selection
 (defun freebox-open-url ()
   "Open a URL for playback via empv.  Supports magnet links and direct URLs."
   (interactive)
-  (let ((url (read-string "FreeBox URL (or magnet): ")))
+  (let ((hydra-curr-on-exit nil)
+        (url (read-string "FreeBox URL (or magnet): ")))
     (when (and url (not (string-empty-p url)))
       (freebox-empv-play-url url))))
 
