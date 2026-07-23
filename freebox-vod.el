@@ -20,8 +20,9 @@
 ;;     -- 加载更多 (p.1/5) --
 ;;   ▸ 电影
 ;;
-;; Keys: RET expand/play, TAB fold, j/k/n move, g refresh, s switch source,
-;;       / search, p poster, V gallery, q quit.
+;; Keys: RET expand/play, TAB fold, h/^ parent node, . goto playing node,
+;;       j/k/n move, g refresh, s switch source, / search, p poster,
+;;       V gallery, q quit.
 ;;
 ;; Lazy loading: expanding an unloaded node fires its fetch exactly once
 ;; (:state loading single-flight guard).  Render collects nodes to load and
@@ -75,6 +76,10 @@ Keys: \"c:<tid>\" category, \"v:<id>\" vod, \"v:<id>:f:<flag>\" flag,
 (defvar freebox-vod--cached-source-key nil
   "Source key last rendered into the VOD buffer.
 Used by `freebox-vod-open' to pop the cached buffer without refetching.")
+
+(defvar freebox-vod--last-played nil
+  "Plist describing the last played episode, for the ▶ marker and \\=`.' jump.
+(:vod-key :flag-key :ep-key :parent-key :title)")
 
 ;;; --- Key & id helpers ----------------------------------------------------------
 
@@ -550,7 +555,7 @@ idempotent), so callbacks can never recurse into a half-rendered buffer."
             (insert (propertize (make-string 64 ?─) 'face 'shadow)
                     "\n"
                     (propertize
-                     "[RET] 播放/展开  [TAB] 折叠  [j/k/n] 移动  [g] 刷新  [s] 换源  [/] 搜索  [p] 海报  [V] 海报集  [q] 退出"
+                     "[RET] 播放/展开 [TAB] 折叠 [h] 上级 [.] 播放节点 [j/k] 移动 [g] 刷新 [s] 换源 [/] 搜索 [p] 海报 [V] 图集 [q] 退出"
                      'face 'font-lock-comment-face)
                     "\n")
             (unless (and node-key (freebox-vod--goto-node-key node-key))
@@ -688,15 +693,23 @@ Return a list of load thunks."
        ((eq state 'loading)
         (insert (propertize "          加载中…\n" 'face 'shadow)))
        (t
-        (dolist (ep eps)
-          (insert (propertize (format "          %s\n" (car ep))
-                              'face 'font-lock-comment-face
-                              'freebox-vod-node
-                              (list :type 'episode
-                                    :key (format "%s:e:%s" key (car ep))
-                                    :data ep
-                                    :vod vod
-                                    :flag (plist-get flag-plist :flag))))))))
+        (let ((last-key (and freebox-vod--last-played
+                             (plist-get freebox-vod--last-played :ep-key))))
+          (dolist (ep eps)
+            (let* ((ep-key (format "%s:e:%s" key (car ep)))
+                   (playing (equal ep-key last-key)))
+              (insert (propertize (format "          %s%s\n"
+                                          (if playing "▶ " "  ")
+                                          (car ep))
+                                  'face (if playing
+                                            'font-lock-constant-face
+                                          'font-lock-comment-face)
+                                  'freebox-vod-node
+                                  (list :type 'episode
+                                        :key ep-key
+                                        :data ep
+                                        :vod vod
+                                        :flag (plist-get flag-plist :flag))))))))))
     (nreverse pending)))
 
 ;;; --- Node helpers --------------------------------------------------------------------------------
@@ -755,15 +768,68 @@ Return a list of load thunks."
       (message "FreeBox: 按 RET 展开")))))
 
 (defun freebox-vod--play-episode (node)
-  "Play the episode at NODE (records episode v-cursor first)."
+  "Play the episode at NODE (records episode v-cursor and ▶ marker first)."
   (let* ((ep (plist-get node :data))
          (vod (plist-get node :vod))
          (flag (plist-get node :flag))
          (name (car ep))
-         (url (cdr ep)))
+         (url (cdr ep))
+         (vod-key (freebox-vod--vod-key vod))
+         (flag-key (format "%s:f:%s" vod-key flag)))
+    (setq freebox-vod--last-played
+          (list :vod-key vod-key
+                :flag-key flag-key
+                :ep-key (format "%s:e:%s" flag-key name)
+                :parent-key (pcase (plist-get vod :owner)
+                              (`(:cat ,tid) (freebox-vod--cat-key tid))
+                              (`(:search) "q:")
+                              (_ nil))
+                :title name))
     (freebox-vod--save-cursor-for-vod vod flag)
     (freebox-ui--resolve-and-play
-     freebox-vod--source-key flag url url name)))
+     freebox-vod--source-key flag url url name)
+    (freebox-vod--render)))
+
+(defun freebox-vod--parent-key (node)
+  "Return the expansion key of NODE's parent, or nil for top-level nodes."
+  (pcase (plist-get node :type)
+    ((or 'category 'search) nil)
+    ('vod (pcase (plist-get (plist-get node :data) :owner)
+            (`(:cat ,tid) (freebox-vod--cat-key tid))
+            (`(:search) "q:")
+            (_ nil)))
+    ('more (freebox-vod--cat-key (plist-get (plist-get node :data) :tid)))
+    ('flag (freebox-vod--vod-key (plist-get node :vod)))
+    ('episode (format "%s:f:%s"
+                      (freebox-vod--vod-key (plist-get node :vod))
+                      (plist-get node :flag)))))
+
+(defun freebox-vod-up ()
+  "h/^: move point to the parent node of the node at point."
+  (interactive)
+  (let ((node (freebox-vod--node-at-point)))
+    (if (not node)
+        (message "FreeBox: 当前行不是节点")
+      (let ((pkey (freebox-vod--parent-key node)))
+        (if (not pkey)
+            (message "FreeBox: 已是顶层节点")
+          (unless (freebox-vod--goto-node-key pkey)
+            (message "FreeBox: 父节点不可见")))))))
+
+(defun freebox-vod-goto-playing ()
+  ".: jump to the last played episode node, expanding its ancestors."
+  (interactive)
+  (if (not freebox-vod--last-played)
+      (message "FreeBox: 还没有播放记录")
+    (let ((lp freebox-vod--last-played))
+      (when (plist-get lp :parent-key)
+        (puthash (plist-get lp :parent-key) t freebox-vod--expanded))
+      (puthash (plist-get lp :vod-key) t freebox-vod--expanded)
+      (puthash (plist-get lp :flag-key) t freebox-vod--expanded)
+      (freebox-vod--render)
+      (if (freebox-vod--goto-node-key (plist-get lp :ep-key))
+          (message "FreeBox: 当前播放 [%s]" (plist-get lp :title))
+        (message "FreeBox: 播放节点不在当前树中（可能在加载或源已切换）")))))
 
 (defun freebox-vod-refresh ()
   "g: refetch everything; expansion state survives, contents reload lazily."
@@ -1108,6 +1174,9 @@ partially loaded items stay visible)."
     (define-key map (kbd "j")   #'next-line)
     (define-key map (kbd "k")   #'previous-line)
     (define-key map (kbd "n")   #'next-line)
+    (define-key map (kbd "h")   #'freebox-vod-up)
+    (define-key map (kbd "^")   #'freebox-vod-up)
+    (define-key map (kbd ".")   #'freebox-vod-goto-playing)
     (define-key map (kbd "g")   #'freebox-vod-refresh)
     (define-key map (kbd "s")   #'freebox-vod-switch-source)
     (define-key map (kbd "/")   #'freebox-vod-search-in-tree)
@@ -1121,6 +1190,8 @@ partially loaded items stay visible)."
 \\<freebox-vod-mode-map>
 \\[freebox-vod-activate] - Play / expand
 \\[freebox-vod-toggle] - Fold
+\\[freebox-vod-up] - Move to parent node
+\\[freebox-vod-goto-playing] - Jump to last played episode
 \\[freebox-vod-refresh] - Refresh (lazy reload, expansion kept)
 \\[freebox-vod-switch-source] - Switch source
 \\[freebox-vod-search-in-tree] - Search

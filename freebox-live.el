@@ -14,8 +14,8 @@
 ;;           线路2
 ;;   ▸ 卫视 (30)
 ;;
-;; Keys: RET play/expand, TAB fold/expand, j/k move, g refresh,
-;;       s switch live source, q quit.
+;; Keys: RET play/expand, TAB fold/expand, h/^ parent node, . goto playing
+;;       channel, j/k move, g refresh, s switch live source, q quit.
 ;;
 ;; The buffer is cached: re-entering with the same live client pops the
 ;; existing buffer instantly (no refetch); use g to refresh.
@@ -206,7 +206,7 @@ not changed; otherwise fetches channels and renders."
     (insert (propertize (make-string 46 ?─) 'face 'shadow)
             "\n"
             (propertize
-             "[RET] 播放/展开  [TAB] 折叠/展开  [j/k] 移动  [g] 刷新  [s] 换源  [q] 退出"
+             "[RET] 播放/展开 [TAB] 折叠 [h] 上级 [.] 播放节点 [j/k] 移动 [g] 刷新 [s] 换源 [q] 退出"
              'face 'font-lock-comment-face)
             "\n")
     (unless (and node-key (freebox-live--goto-node-key node-key))
@@ -352,6 +352,46 @@ Read at line beginning because the trailing newline carries no property."
     (freebox-live--play-line line title)
     (freebox-live--render)))
 
+(defun freebox-live-up ()
+  "h/^: move point to the parent node (line -> channel -> group)."
+  (interactive)
+  (let ((node (freebox-live--node-at-point)))
+    (if (not node)
+        (message "FreeBox: 当前行不是频道节点")
+      (let ((pkey (pcase (plist-get node :type)
+                    ('group nil)
+                    ('channel (number-to-string (plist-get node :gi)))
+                    ('line (format "%d/%d" (plist-get node :gi)
+                                   (plist-get node :ci))))))
+        (if (not pkey)
+            (message "FreeBox: 已是顶层节点")
+          (unless (freebox-live--goto-node-key pkey)
+            (message "FreeBox: 父节点不可见")))))))
+
+(defun freebox-live-goto-playing ()
+  ".: jump to the last played channel, expanding its group."
+  (interactive)
+  (if (not freebox-live--last-channel-title)
+      (message "FreeBox: 还没有播放记录")
+    (let ((found nil)
+          (gi 0))
+      (dolist (g freebox-live--groups)
+        (let ((ci 0))
+          (dolist (ch (freebox-ui--vec->list (freebox-ui--jget g 'channels)))
+            (when (equal (freebox-ui--jget ch 'title)
+                         freebox-live--last-channel-title)
+              (setq found (cons gi ci)))
+            (setq ci (1+ ci))))
+        (setq gi (1+ gi)))
+      (if (not found)
+          (message "FreeBox: 播放的频道 [%s] 不在当前源中"
+                   freebox-live--last-channel-title)
+        (puthash (number-to-string (car found)) t freebox-live--expanded)
+        (freebox-live--render)
+        (if (freebox-live--goto-node-key (format "%d/%d" (car found) (cdr found)))
+            (message "FreeBox: 当前播放 [%s]" freebox-live--last-channel-title)
+          (message "FreeBox: 频道节点不可见"))))))
+
 (defun freebox-live-refresh ()
   "g: refetch channels for the buffer's client and re-render.
 Expansion state is preserved; out-of-range keys are simply unused."
@@ -402,6 +442,9 @@ Expansion state is preserved; out-of-range keys are simply unused."
     (define-key map (kbd "k")   #'previous-line)
     (define-key map (kbd "n")   #'next-line)
     (define-key map (kbd "p")   #'previous-line)
+    (define-key map (kbd "h")   #'freebox-live-up)
+    (define-key map (kbd "^")   #'freebox-live-up)
+    (define-key map (kbd ".")   #'freebox-live-goto-playing)
     (define-key map (kbd "g")   #'freebox-live-refresh)
     (define-key map (kbd "s")   #'freebox-live-switch-source)
     map)
