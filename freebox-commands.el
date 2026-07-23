@@ -13,6 +13,7 @@
 ;;   y  Select source    -- Change current source within client
 ;;   z  Select category  -- Select a category within current source
 ;;   l  Select live src  -- Select live TV source (SINGLE_LIVE)
+;;   b  Browse category  -- Open the VOD tree browser
 ;;   s  Search videos    -- Full-text search
 ;;   v  Resume last pos  -- Resume from last remembered navigation node
 ;;   o  Open URL         -- Play a URL directly (supports magnet links)
@@ -30,6 +31,7 @@
 (require 'freebox-ui)
 (require 'freebox-http)
 (require 'freebox-live)
+(require 'freebox-vod)
 
 ;;; --- Hydra title helpers -----------------------------------------------------
 
@@ -82,7 +84,8 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
       ("z" freebox-select-category "Select category")
       ("l" freebox-select-live-client "Select live source"))
      "Browse"
-     (("s" freebox-search  "Search videos")
+     (("b" freebox-browse-category "Browse category")
+      ("s" freebox-search  "Search videos")
       ("v" freebox-resume  "Resume last pos")
       ("o" freebox-open-url "Open URL")
       ("L" freebox-live "Live TV")
@@ -116,7 +119,8 @@ Restores previous menu state and displays current selections in title."
       ("z" freebox-select-category "Select category")
       ("l" freebox-select-live-client "Select live source"))
      "Browse"
-     (("s" freebox-search  "Search videos")
+     (("b" freebox-browse-category "Browse category")
+      ("s" freebox-search  "Search videos")
       ("v" freebox-resume  "Resume last pos")
       ("o" freebox-open-url "Open URL")
       ("L" freebox-live "Live TV")
@@ -154,28 +158,29 @@ Restores previous menu state and displays current selections in title."
 
 ;;;###autoload
 (defun freebox-select-category ()
-  "Select a FreeBox category within the current source."
+  "Select a FreeBox category within the current source (in the VOD tree)."
   (interactive)
-  (freebox-ui-select-category))
+  (freebox-vod-select-category))
 
 ;;;###autoload
 (defun freebox-search ()
-  "Search FreeBox for videos."
+  "Search FreeBox for videos (results as a group in the VOD tree)."
   (interactive)
-  (freebox-ui-search))
+  (freebox-vod-search))
 
 ;;;###autoload
 (defun freebox-browse-category ()
-  "Browse FreeBox videos by (remembered) category."
+  "Browse FreeBox videos in the VOD tree buffer."
   (interactive)
-  (freebox-ui-browse-category))
+  (freebox-vod-open))
 
 ;;;###autoload
 (defun freebox-resume ()
   "Resume browsing from the last remembered navigation position.
-Restores to the deepest saved node: vod-list page, category, or source selection."
+Restores the VOD tree to the deepest saved node: category page,
+vod detail, or episode line."
   (interactive)
-  (freebox-ui-resume))
+  (freebox-vod-resume))
 
 ;;;###autoload
 (defun freebox-open-url ()
@@ -207,7 +212,7 @@ Restores to the deepest saved node: vod-list page, category, or source selection
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  l=live-src  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=百度  q=quit"))
+   "FreeBox: x=client  y=source  z=category  l=live-src  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=百度  q=quit"))
 
 ;;;###autoload
 (defun freebox-qr-login-quark ()

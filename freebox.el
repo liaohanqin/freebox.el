@@ -33,6 +33,7 @@
 (require 'freebox-http)
 (require 'freebox-ui)
 (require 'freebox-live)
+(require 'freebox-vod)
 (require 'freebox-empv)
 (require 'freebox-commands)
 
