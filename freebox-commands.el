@@ -19,7 +19,10 @@
 ;;   L  Live TV          -- Browse and play live TV channels
 ;;   S  Save magnet file -- Save downloaded magnet file to another directory
 ;;   r  Start server     -- Start FreeBox backend
-;;   k  Stop server      -- Stop managed backend
+;;   K  Stop server      -- Stop managed backend (shifted: plain `k' is too
+;;                          easy to hit by accident during minibuffer
+;;                          interaction — hydra intercepts head keys there,
+;;                          and stopping kills the whole backend)
 ;;   q  Quit             -- Close menu
 
 ;;; Code:
@@ -85,7 +88,7 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
       ("S" freebox-save-magnet-file "Save magnet file"))
      "Server"
      (("r" freebox-http-start-server "Start server")
-      ("k" freebox-http-stop-server  "Stop server"))
+      ("K" freebox-http-stop-server  "Stop server"))
      "Other"
      (("?" freebox-help "Help"))
      "Login"
@@ -119,7 +122,7 @@ Restores previous menu state and displays current selections in title."
       ("S" freebox-save-magnet-file "Save magnet file"))
      "Server"
      (("r" freebox-http-start-server "Start server")
-      ("k" freebox-http-stop-server  "Stop server"))
+      ("K" freebox-http-stop-server  "Stop server"))
      "Other"
      (("?" freebox-help "Help"))
      "Login"
@@ -203,7 +206,7 @@ Restores to the deepest saved node: vod-list page, category, or source selection
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  l=live-src  s=search  v=resume  o=open-url  L=live  S=save  r=start  k=stop  Q=Quark  U=UC  B=百度  q=quit"))
+   "FreeBox: x=client  y=source  z=category  l=live-src  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=百度  q=quit"))
 
 ;;;###autoload
 (defun freebox-qr-login-quark ()
