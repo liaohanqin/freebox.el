@@ -32,6 +32,7 @@
 (require 'freebox-model)
 (require 'freebox-http)
 (require 'freebox-ui)
+(require 'freebox-live)
 (require 'freebox-empv)
 (require 'freebox-commands)
 

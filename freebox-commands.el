@@ -29,6 +29,7 @@
 
 (require 'freebox-ui)
 (require 'freebox-http)
+(require 'freebox-live)
 
 ;;; --- Hydra title helpers -----------------------------------------------------
 
@@ -143,7 +144,7 @@ Restores previous menu state and displays current selections in title."
 (defun freebox-select-live-client ()
   "Select a FreeBox live TV client (SINGLE_LIVE source URL)."
   (interactive)
-  (freebox-ui-select-live-client))
+  (freebox-live-select-client))
 
 ;;;###autoload
 (defun freebox-select-source ()
@@ -191,9 +192,9 @@ Restores to the deepest saved node: vod-list page, category, or source selection
 
 ;;;###autoload
 (defun freebox-live ()
-  "Browse and play FreeBox live TV channels."
+  "Browse and play FreeBox live TV channels in a tree buffer."
   (interactive)
-  (freebox-ui-live))
+  (freebox-live-open))
 
 ;;;###autoload
 (defun freebox-save-magnet-file ()
