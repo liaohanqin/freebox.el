@@ -103,10 +103,19 @@ REQUIRE-MATCH defaults to t.
 When called from a hydra head, suppress the on-exit callback so the
 lv hint window stays visible, and re-activate the hydra after the
 minibuffer exits so the user can continue pressing hydra keys."
-  (let ((was-hydra-active (and (boundp 'hydra-curr-map) hydra-curr-map))
-        (result
+  (let* ((was-hydra-active (and (boundp 'hydra-curr-map) hydra-curr-map))
+         ;; ivy 的 `ivy-completing-read' 在 collection 为 alist 且 predicate
+         ;; 为 nil 时会炸：`ivy--reset-state' 的 alist 分支无条件执行
+         ;; (cl-remove-if-not nil collection)，funcall nil → void-function nil。
+         ;; 这里把 alist 归一化成 car 字符串列表；`completing-read' 返回的
+         ;; 仍是选中的 name 字符串，调用方的 (assoc name candidates) 不受影响。
+         ;; 用 let* 因为 result 的 init 要引用 cands。
+         (cands (if (consp (car-safe candidates))
+                    (mapcar #'car candidates)
+                  candidates))
+         (result
          (condition-case nil
-             (let ((r (completing-read prompt candidates nil
+             (let ((r (completing-read prompt cands nil
                                         (if (eq require-match nil) nil t))))
                (if (string-empty-p r) nil r))
            (quit nil))))
