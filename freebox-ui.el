@@ -722,16 +722,20 @@ Resolves SHARE-LINK and shows episodes."
 (defun freebox-ui-parse-episodes (url-str)
   "Parse URL-STR into an alist of (EPISODE-NAME . URL) pairs.
 URL-STR uses the TVBox format: \"name1$url1#name2$url2#...\".
+When URL-STR carries multiple flag groups joined by \"$$$\" (as the
+backend resolve-share returns for Quark), only the first group is
+parsed: the extra groups repeat the same episode set.
 Entries not matching the \"name$url\" shape are dropped.
 Returns nil when nothing parses.  Pure function; shared by the
 legacy completing-read flow and the `freebox-vod' tree browser."
-  (and url-str
-       (delq nil
-             (mapcar (lambda (part)
-                       (when (string-match "^\\(.*?\\)\\$\\(.*\\)$" part)
-                         (cons (match-string 1 part)
-                               (match-string 2 part))))
-                     (split-string url-str "#")))))
+  (let ((url-str (and url-str (car (split-string url-str "\\$\\$\\$")))))
+    (and url-str
+         (delq nil
+               (mapcar (lambda (part)
+                         (when (string-match "^\\(.*?\\)\\$\\(.*\\)$" part)
+                           (cons (match-string 1 part)
+                                 (match-string 2 part))))
+                       (split-string url-str "#"))))))
 
 (defun freebox-ui--pick-episode (vod vod-id flag url-str &optional share-link)
   "Let user pick an episode from URL-STR under FLAG, then play it.
