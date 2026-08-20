@@ -205,6 +205,20 @@ When nil, auto-start is disabled and the server must be started manually."
   :type '(choice (const :tag "Disabled" nil) file)
   :group 'freebox-http)
 
+(defcustom freebox-http-server-args '("run" "--args=--headless")
+  "Command-line args passed to `freebox-http-server-script' when starting.
+The default starts the Java FreeBox backend via gradlew.
+For the vbox Node.js backend, set to (\"daemon\" \"start\")."
+  :type '(repeat string)
+  :group 'freebox-http)
+
+(defcustom freebox-http-server-stop-args nil
+  "When non-nil, args passed to `freebox-http-server-script' to stop the daemon.
+For the vbox backend, set to (\"daemon\" \"stop\").
+When nil, the managed process is stopped by deleting the process object."
+  :type '(choice (const :tag "Managed process" nil) (repeat string))
+  :group 'freebox-http)
+
 (defcustom freebox-http-server-start-timeout 30
   "Seconds to wait for FreeBox server to become ready after starting."
   :type 'integer
@@ -267,7 +281,7 @@ Output is collected in the *freebox-server* buffer."
           (make-process
            :name    "freebox-server"
            :buffer  "*freebox-server*"
-           :command (list script "run" "--args=--headless")
+           :command (cons script freebox-http-server-args)
            :noquery t
            :sentinel (lambda (_proc event)
                        (message "FreeBox server: %s" (string-trim event)))))
@@ -281,14 +295,27 @@ Output is collected in the *freebox-server* buffer."
              (process-live-p freebox-http--proxy-process))
     (delete-process freebox-http--proxy-process)
     (setq freebox-http--proxy-process nil))
-  ;; Stop FreeBox server
-  (if (and freebox-http--server-process
-           (process-live-p freebox-http--server-process))
-      (progn
-        (delete-process freebox-http--server-process)
-        (setq freebox-http--server-process nil)
-        (message "FreeBox: server stopped."))
-    (message "FreeBox: no managed server process running.")))
+  ;; Stop backend server
+  (cond
+   ;; vbox 等 daemon 型后端：调用脚本的 stop 子命令
+   (freebox-http-server-stop-args
+    (message "FreeBox: stopping server via %s %s..."
+             freebox-http-server-script (mapconcat #'identity freebox-http-server-stop-args " "))
+    (let ((default-directory (file-name-directory
+                              (expand-file-name freebox-http-server-script))))
+      (make-process
+       :name    "freebox-server-stop"
+       :buffer  "*freebox-server-stop*"
+       :command (cons (expand-file-name freebox-http-server-script)
+                      freebox-http-server-stop-args)
+       :noquery t)))
+   ((and freebox-http--server-process
+         (process-live-p freebox-http--server-process))
+    (delete-process freebox-http--server-process)
+    (setq freebox-http--server-process nil)
+    (message "FreeBox: server stopped."))
+   (t
+    (message "FreeBox: no managed server process running."))))
 
 (defconst freebox-http--server-script-default
   "~/git/FreeBox/gradlew"
