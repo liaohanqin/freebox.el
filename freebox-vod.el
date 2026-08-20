@@ -395,19 +395,25 @@ already loaded, DONE-FN is called immediately."
 
 (defun freebox-vod--resolve-empty (vod flag-plist share-link)
   "Handle an empty/error RESOLVE result for FLAG-PLIST.
-Offers QR login when the backend reports an unconfigured drive."
+Offers QR login when the backend reports an unconfigured drive.
+The offer is made only once per flag: after a QR login retry, a
+repeated failure just prints a message instead of prompting again
+(preventing an endless prompt loop)."
   (let* ((flag (plist-get flag-plist :flag))
          (urls (plist-get flag-plist :url-str))
          (err-msg (and urls (freebox-ui--error-url-p urls)
                        (freebox-ui--extract-error-message urls)))
-         (login-type (freebox-ui--infer-login-type flag)))
+         (login-type (freebox-ui--infer-login-type flag))
+         (qr-retried (plist-get flag-plist :qr-retried)))
     (if (and err-msg login-type
              (string-match-p "网盘未配置\\|未配置" err-msg)
-             share-link)
+             share-link
+             (not qr-retried))
         (progn
           (message "FreeBox: [%s] %s" flag err-msg)
           (when (y-or-n-p (format "是否扫码登录%s？"
                                   (freebox-vod--login-type-name login-type)))
+            (setf (plist-get flag-plist :qr-retried) t)
             (freebox-ui--start-qr-login
              login-type flag share-link
              (lambda () (freebox-vod--retry-flag-after-login vod flag)))))
@@ -429,20 +435,20 @@ Offers QR login when the backend reports an unconfigured drive."
              (when (and f (eq (plist-get f :state) 'loading))
                (cond
                 (err
-                 (setf (plist-get f :state) 'unloaded)
+                 (setf (plist-get f :state) 'error)
                  (freebox-ui--error err))
                 (t
                  (let ((urls (and data (alist-get 'urls data))))
                    (if (or (not urls) (string-empty-p urls))
                        (progn
-                         (setf (plist-get f :state) 'unloaded)
+                         (setf (plist-get f :state) 'error)
                          (freebox-vod--resolve-empty v f share-link))
                      (setf (plist-get f :url-str) urls)
                      (let ((eps (freebox-ui-parse-episodes urls)))
                        (if eps
                            (setf (plist-get f :episodes) eps
                                  (plist-get f :state) 'loaded)
-                         (setf (plist-get f :state) 'unloaded)
+                         (setf (plist-get f :state) 'error)
                          (freebox-vod--resolve-empty v f share-link)))))))
                (freebox-vod--render)))))))))
 
@@ -475,7 +481,7 @@ Direct lines parse synchronously; RESOLVE-type lines fire resolve-share."
                 (setf (plist-get flag-plist :episodes) episodes
                       (plist-get flag-plist :state) 'loaded)
                 (freebox-vod--render))
-            (setf (plist-get flag-plist :state) 'unloaded)
+            (setf (plist-get flag-plist :state) 'error)
             (freebox-vod--flag-parse-failed flag-plist)))))))
 
 ;;; --- Lazy loading: search -------------------------------------------------------------------
@@ -692,6 +698,9 @@ Return a list of load thunks."
               pending))
        ((eq state 'loading)
         (insert (propertize "          加载中…\n" 'face 'shadow)))
+       ((eq state 'error)
+        (insert (propertize "          解析失败，按 RET 重试\n"
+                            'face 'font-lock-warning-face)))
        (t
         (let ((last-key (and freebox-vod--last-played
                              (plist-get freebox-vod--last-played :ep-key))))
@@ -738,7 +747,8 @@ Return a list of load thunks."
 ;;; --- Interaction ------------------------------------------------------------------------------------
 
 (defun freebox-vod-activate ()
-  "RET: play an episode, page a category, or toggle an expandable node."
+  "RET: play an episode, page a category, or toggle an expandable node.
+Re-expanding an error-state flag node retries loading its episodes."
   (interactive)
   (let ((node (freebox-vod--node-at-point)))
     (if (not node)
@@ -749,9 +759,18 @@ Return a list of load thunks."
         ('more
          (freebox-vod--load-more (plist-get node :data)))
         (_
-         (puthash (plist-get node :key)
-                  (not (gethash (plist-get node :key) freebox-vod--expanded))
-                  freebox-vod--expanded)
+         (let* ((key (plist-get node :key))
+                (expanded (gethash key freebox-vod--expanded)))
+           (if expanded
+               ;; 已展开：折叠
+               (puthash key nil freebox-vod--expanded)
+             ;; 未展开：展开；flag 处于 error 状态时顺带重试加载
+             (puthash key t freebox-vod--expanded)
+             (when (and (eq (plist-get node :type) 'flag)
+                        (eq (plist-get (plist-get node :data) :state) 'error))
+               (let ((flag-plist (plist-get node :data)))
+                 (setf (plist-get flag-plist :state) 'unloaded)
+                 (freebox-vod--ensure-flag-loaded (plist-get node :vod) flag-plist)))))
          (freebox-vod--render))))))
 
 (defun freebox-vod-toggle ()
