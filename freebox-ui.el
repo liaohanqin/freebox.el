@@ -479,10 +479,12 @@ to allow returning to the gallery from the poster detail view."
                  (format "\n%s" (truncate-string-to-width des 120 nil nil "..."))
                ""))))
 
-(defun freebox-ui--resolve-and-play (source-key play-flag episode-url direct-url title)
+(defun freebox-ui--resolve-and-play (source-key play-flag episode-url direct-url title &optional quiet)
   "Resolve the final playback URL via /api/play then call empv.
 EPISODE-URL is the raw episode URL (used as vodId).
-DIRECT-URL is a fallback if the API fails."
+DIRECT-URL is a fallback if the API fails.
+QUIET is non-nil on retry after QR login: don't prompt for login again,
+preventing an endless retry loop when the drive is still misconfigured."
   (freebox-ui--loading (format "resolving URL for \"%s\"" title))
   (freebox-http-get-play-url source-key play-flag episode-url freebox-ui-current-client-id
     (lambda (err pdata)
@@ -503,18 +505,29 @@ DIRECT-URL is a fallback if the API fails."
                   (let ((err-msg (freebox-ui--extract-error-message url))
                         (login-type (freebox-ui--infer-login-type play-flag)))
                     (message "FreeBox: [%s] %s" play-flag err-msg)
-                    (when (and login-type
-                               (y-or-n-p (format "是否扫码登录%s？"
-                                                 (pcase login-type
-                                                   ("quark" "夸克网盘")
-                                                   ("uc" "UC网盘")
-                                                   ("bd" "百度网盘")
-                                                   (_ login-type)))))
-                      (freebox-ui--start-qr-login
-                       login-type play-flag nil
-                       (lambda ()
-                         (freebox-ui--resolve-and-play
-                          source-key play-flag episode-url direct-url title)))))
+                    (if (and login-type (not quiet))
+                        ;; 首次失败：询问是否扫码登录；登录回调以 quiet 重试，避免死循环
+                        (when (y-or-n-p
+                               (format "是否扫码登录%s？"
+                                       (pcase login-type
+                                         ("quark" "夸克网盘")
+                                         ("uc" "UC网盘")
+                                         ("bd" "百度网盘")
+                                         (_ login-type))))
+                          (freebox-ui--start-qr-login
+                           login-type play-flag nil
+                           (lambda ()
+                             (freebox-ui--resolve-and-play
+                              source-key play-flag episode-url direct-url title t))))
+                      ;; 已重试过登录仍失败：不再弹窗，提示用户
+                      (when login-type
+                        (message "FreeBox: 登录后仍无法解析，请检查 %s 网盘配置或用 %s 菜单键重新扫码"
+                                 (pcase login-type
+                                   ("quark" "夸克")
+                                   ("uc" "UC")
+                                   ("bd" "百度")
+                                   (_ login-type))
+                                 (upcase (substring login-type 0 1))))))
                 (progn (message "FreeBox: playing \"%s\"" title)
                        (freebox-empv-play-url url title)))
             (message "FreeBox: could not resolve URL for \"%s\"." title)))))))
