@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'request)
+(require 'freebox-persist)
 
 (defgroup freebox-http nil
   "FreeBox HTTP API client."
@@ -44,6 +45,37 @@ Toggle with `freebox-http-toggle-cloud-mode'."
   (if freebox-http-cloud-mode
       t
     (not (string-match-p "127\\.0\\.0\\.1\\|localhost" freebox-http-url))))
+
+(defun freebox-http-set-cloud-url ()
+  "Interactively set the cloud FreeBox backend base URL.
+Prompts for a URL, saves it to `freebox-http-cloud-url' and persists
+it via `freebox-persist' so it survives restarts.  If cloud mode is
+already active, switches `freebox-http-url' to the new value."
+  (interactive)
+  (let ((was-hydra-active (and (boundp 'hydra-curr-map) hydra-curr-map)))
+    (setq hydra-curr-on-exit nil)
+    (let ((url (read-string
+                (format "FreeBox cloud API URL (current: %s): "
+                        freebox-http-cloud-url)
+                freebox-http-cloud-url)))
+      (when (and was-hydra-active (not hydra-curr-map)
+                 (fboundp 'freebox-menu/body))
+        (freebox-menu/body))
+      (when (and url (not (string-empty-p url)))
+        (setq url (string-trim url))
+        (setq freebox-http-cloud-url url)
+        (freebox-persist-set 'cloud-url url)
+        (when (freebox-http-cloud-mode)
+          (setq freebox-http-url url))
+        (message "FreeBox: cloud URL set to %s" url)))))
+
+(defun freebox-http-restore-cloud-url ()
+  "Restore persisted cloud URL into `freebox-http-cloud-url'.
+Called on menu startup so a previously saved cloud address survives
+restarts and shows up as the current value when editing."
+  (let ((url (freebox-persist-get 'cloud-url)))
+    (when (and url (not (string-empty-p url)))
+      (setq freebox-http-cloud-url url))))
 
 (defun freebox-http-toggle-cloud-mode ()
   "Toggle between local and cloud FreeBox backend.
@@ -231,6 +263,12 @@ BD uses 45s timeout for baidu unicast long-poll, others use default."
         ,@(when client-id `((clientId . ,client-id))))
       callback
       timeout)))
+
+(defun freebox-http-get-drive-status (callback)
+  "Fetch login status of each cloud drive (quark/uc/baidu).
+CALLBACK is called with (ERROR STATUS).
+STATUS is an alist: ((quark . good|bad|unset) (uc . ...) (baidu . ...))."
+  (freebox-http--request "drive-status" nil callback 30))
 
 ;;; ─── Server management ────────────────────────────────────────────────────
 

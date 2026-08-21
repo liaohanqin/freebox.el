@@ -35,6 +35,32 @@
 
 ;;; --- Hydra title helpers -----------------------------------------------------
 
+(declare-function freebox--redefine-menu "freebox-commands" () t)
+
+(defvar freebox-http--drive-status-cache nil
+  "Cached drive status alist, e.g. ((quark . good) (uc . bad) (baidu . unset)).
+Populated by `freebox-http-refresh-drive-status'; nil means not yet fetched.")
+
+(defun freebox-http--drive-status-string ()
+  "Return a compact drive status string for the menu title.
+Each entry formatted as \"quark(good)\"; shows \"...\" while loading."
+  (if (null freebox-http--drive-status-cache)
+      "..."
+    (mapconcat (lambda (pair)
+                 (format "%s(%s)" (car pair) (cdr pair)))
+               freebox-http--drive-status-cache " ")))
+
+(defun freebox-http-refresh-drive-status ()
+  "Fetch cloud drive login status and cache it for the menu title.
+Async; on completion updates `freebox-http--drive-status-cache'.  If the
+freebox-menu hydra is still active, re-defines it so the title refreshes."
+  (freebox-http-get-drive-status
+   (lambda (err status)
+     (setq freebox-http--drive-status-cache
+           (if err nil status))
+     (when (and (boundp 'hydra-curr-map) hydra-curr-map)
+       (freebox--redefine-menu)))))
+
 (defun freebox--client-status-short ()
   "Return short client status string for hydra display."
   (if freebox-ui-current-client-name
@@ -66,9 +92,10 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
 
 (defun freebox--format-menu-title ()
   "Format the main menu title with current state."
-  (format "FreeBox - Emacs Video Client\nClient: %s | Source: %s\nServer: %s"
+  (format "FreeBox - Emacs Video Client\nClient: %s | Source: %s\nDrives: %s\nServer: %s"
           (freebox--client-status-short)
           (freebox--source-status-short)
+          (freebox-http--drive-status-string)
           (freebox--server-status-string)))
 
 ;;; --- Static hydra definition (loaded once) -----------------------------------
@@ -82,7 +109,8 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
       ("z" freebox-select-category "Select category")
-      ("l" freebox-select-live-client "Select live source"))
+      ("l" freebox-select-live-client "Select live source")
+      ("C" freebox-http-set-cloud-url "Cloud URL"))
      "Browse"
      (("b" freebox-browse-category "Browse category")
       ("s" freebox-search  "Search videos")
@@ -105,13 +133,8 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
 
 ;;; --- Main entry point --------------------------------------------------------
 
-;;;###autoload
-(defun freebox ()
-  "Open FreeBox main menu (hydra).
-Restores previous menu state and displays current selections in title."
-  (interactive)
-  (freebox-ui-restore-state)
-  ;; Re-define the hydra with fresh title (state was just restored above)
+(defun freebox--redefine-menu ()
+  "Re-define the freebox-menu hydra with fresh title and show it."
   (pretty-hydra-define freebox-menu
     (:title (format "%s" (freebox--format-menu-title))
      :color red
@@ -120,7 +143,8 @@ Restores previous menu state and displays current selections in title."
      (("x" freebox-select-client   "Select client")
       ("y" freebox-select-source   "Select source")
       ("z" freebox-select-category "Select category")
-      ("l" freebox-select-live-client "Select live source"))
+      ("l" freebox-select-live-client "Select live source")
+      ("C" freebox-http-set-cloud-url "Cloud URL"))
      "Browse"
      (("b" freebox-browse-category "Browse category")
       ("s" freebox-search  "Search videos")
@@ -141,6 +165,17 @@ Restores previous menu state and displays current selections in title."
       ("U" freebox-qr-login-uc    "UC")
       ("B" freebox-qr-login-bd    "Baidu"))))
   (freebox-menu/body))
+
+;;;###autoload
+(defun freebox ()
+  "Open FreeBox main menu (hydra).
+Restores previous menu state and displays current selections in title."
+  (interactive)
+  (freebox-ui-restore-state)
+  ;; Re-define the hydra with fresh title (state was just restored above)
+  (freebox--redefine-menu)
+  ;; Async refresh of drive status — title shows "..." first, then updates
+  (freebox-http-refresh-drive-status))
 
 ;;; --- Interactive commands ----------------------------------------------------
 
@@ -218,7 +253,7 @@ vod detail, or episode line."
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  l=live-src  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=Baidu  q=quit"))
+   "FreeBox: x=client  y=source  z=category  l=live-src  C=cloud-url  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=Baidu  q=quit"))
 
 ;;;###autoload
 (defun freebox-qr-login-quark ()

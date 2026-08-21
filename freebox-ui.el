@@ -860,6 +860,7 @@ so next v reopens this detail page."
 (defun freebox-ui-restore-state ()
   "Restore UI state from persistent storage.
 Called on menu startup to recover previous selections."
+  (freebox-http-restore-cloud-url)
   (freebox-ui-init))
 
 (defun freebox-ui-show-current-state ()
