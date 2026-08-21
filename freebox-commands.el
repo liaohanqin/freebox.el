@@ -94,14 +94,14 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
      (("r" freebox-http-start-server "Start server")
       ("K" freebox-http-stop-server  "Stop server"))
      "Mode"
-     (("M" freebox-http-toggle-cloud-mode "云端模式"
+     (("M" freebox-http-toggle-cloud-mode "Cloud"
        :toggle freebox-http-cloud-mode))
      "Other"
      (("?" freebox-help "Help"))
      "Login"
-     (("Q" freebox-qr-login-quark "Quark扫码")
-      ("U" freebox-qr-login-uc    "UC扫码")
-      ("B" freebox-qr-login-bd    "百度扫码")))))
+     (("Q" freebox-qr-login-quark "Quark")
+      ("U" freebox-qr-login-uc    "UC")
+      ("B" freebox-qr-login-bd    "Baidu")))))
 
 ;;; --- Main entry point --------------------------------------------------------
 
@@ -132,14 +132,14 @@ Restores previous menu state and displays current selections in title."
      (("r" freebox-http-start-server "Start server")
       ("K" freebox-http-stop-server  "Stop server"))
      "Mode"
-     (("M" freebox-http-toggle-cloud-mode "云端模式"
+     (("M" freebox-http-toggle-cloud-mode "Cloud"
        :toggle freebox-http-cloud-mode))
      "Other"
      (("?" freebox-help "Help"))
      "Login"
-     (("Q" freebox-qr-login-quark "Quark扫码")
-      ("U" freebox-qr-login-uc    "UC扫码")
-      ("B" freebox-qr-login-bd    "百度扫码"))))
+     (("Q" freebox-qr-login-quark "Quark")
+      ("U" freebox-qr-login-uc    "UC")
+      ("B" freebox-qr-login-bd    "Baidu"))))
   (freebox-menu/body))
 
 ;;; --- Interactive commands ----------------------------------------------------
@@ -218,7 +218,7 @@ vod detail, or episode line."
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  l=live-src  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=百度  q=quit"))
+   "FreeBox: x=client  y=source  z=category  l=live-src  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=Baidu  q=quit"))
 
 ;;;###autoload
 (defun freebox-qr-login-quark ()
@@ -229,7 +229,7 @@ vod detail, or episode line."
      (freebox-ui--start-qr-login
       "quark" nil nil
       (lambda ()
-        (message "FreeBox: Quark 扫码完成！请重新播放视频"))))))
+        (message "FreeBox: Quark login done! Please replay the video"))))))
 
 ;;;###autoload
 (defun freebox-qr-login-uc ()
@@ -240,7 +240,7 @@ vod detail, or episode line."
      (freebox-ui--start-qr-login
       "uc" nil nil
       (lambda ()
-        (message "FreeBox: UC 扫码完成！请重新播放视频"))))))
+        (message "FreeBox: UC login done! Please replay the video"))))))
 
 ;;;###autoload
 (defun freebox-qr-login-bd ()
@@ -251,7 +251,7 @@ vod detail, or episode line."
      (freebox-ui--start-qr-login
       "bd" nil nil
       (lambda ()
-        (message "FreeBox: 百度网盘 扫码完成！请重新播放视频"))))))
+        (message "FreeBox: Baidu cloud login done! Please replay the video"))))))
 
 (provide 'freebox-commands)
 ;;; freebox-commands.el ends here
