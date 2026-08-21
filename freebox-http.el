@@ -22,6 +22,42 @@
   :type 'integer
   :group 'freebox-http)
 
+(defcustom freebox-http-cloud-url
+  "https://vbox-300334-11-1471098780.sh.run.tcloudbase.com/api"
+  "Base URL for the cloud-hosted FreeBox backend (used when cloud mode is on)."
+  :type 'string
+  :group 'freebox-http)
+
+(defcustom freebox-http-local-url "http://127.0.0.1:9978/api"
+  "Base URL for the local FreeBox backend (used when cloud mode is off)."
+  :type 'string
+  :group 'freebox-http)
+
+(defcustom freebox-http-cloud-mode nil
+  "When non-nil, `freebox-http-url' points at the cloud backend.
+Toggle with `freebox-http-toggle-cloud-mode'."
+  :type 'boolean
+  :group 'freebox-http)
+
+(defun freebox-http-cloud-mode ()
+  "Return t if cloud mode is active (local URL is nil or cloud flag set)."
+  (if freebox-http-cloud-mode
+      t
+    (not (string-match-p "127\\.0\\.0\\.1\\|localhost" freebox-http-url))))
+
+(defun freebox-http-toggle-cloud-mode ()
+  "Toggle between local and cloud FreeBox backend.
+Cloud mode uses `freebox-http-cloud-url'; local mode uses
+`freebox-http-local-url' (defaults to http://127.0.0.1:9978/api)."
+  (interactive)
+  (let ((cloud (not (freebox-http-cloud-mode))))
+    (setq freebox-http-cloud-mode cloud)
+    (setq freebox-http-url
+          (if cloud
+              freebox-http-cloud-url
+            (or freebox-http-local-url "http://127.0.0.1:9978/api")))
+    (message "FreeBox: %s backend (%s)" (if cloud "云端" "本地") freebox-http-url)))
+
 ;;; ─── Helper functions ─────────────────────────────────────────────────────
 
 (defun freebox-http--jget (obj key)

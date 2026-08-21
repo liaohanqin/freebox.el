@@ -93,6 +93,9 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
      "Server"
      (("r" freebox-http-start-server "Start server")
       ("K" freebox-http-stop-server  "Stop server"))
+     "Mode"
+     (("M" freebox-http-toggle-cloud-mode "云端模式"
+       :toggle freebox-http-cloud-mode))
      "Other"
      (("?" freebox-help "Help"))
      "Login"
@@ -128,6 +131,9 @@ Restores previous menu state and displays current selections in title."
      "Server"
      (("r" freebox-http-start-server "Start server")
       ("K" freebox-http-stop-server  "Stop server"))
+     "Mode"
+     (("M" freebox-http-toggle-cloud-mode "云端模式"
+       :toggle freebox-http-cloud-mode))
      "Other"
      (("?" freebox-help "Help"))
      "Login"
