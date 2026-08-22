@@ -28,6 +28,7 @@
 
 ;;; Code:
 
+(require 'pretty-hydra)
 (require 'freebox-ui)
 (require 'freebox-http)
 (require 'freebox-live)
