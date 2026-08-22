@@ -215,12 +215,16 @@ and actual mpv exit (persistent stopped)."
                        (freebox-empv--magnet-request
                         "pause" `((task_id . ,saved-task-id))
                         (lambda (err result)
-                          (if (or err
-                                  (let ((e (alist-get 'error result)))
-                                    (and e (not (string-empty-p e)))))
-                              (message "FreeBox: auto-pause failed — %s"
-                                       (or err (alist-get 'error result)))
-                            (message "FreeBox: magnet download paused (mpv exited)"))))))
+                          (cond
+                           ((or err
+                                (let ((e (alist-get 'error result)))
+                                  (and e (not (string-empty-p e)))))
+                            (message "FreeBox: auto-pause failed — %s"
+                                     (or err (alist-get 'error result))))
+                           ((string= (alist-get 'status result) "complete_removed")
+                            (message "FreeBox: 下载已完成，任务已自动移除"))
+                           (t
+                            (message "FreeBox: magnet download paused (mpv exited)")))))))
                    task-id))))
 
 (defun freebox-empv--xunlei-register-exit-hook (task-id)
