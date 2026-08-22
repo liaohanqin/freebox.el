@@ -469,6 +469,8 @@ Files still downloading are marked with their progress."
                                          (format "保存 %s 到: " name)
                                          (or freebox-empv--last-save-dir "~/"))
                                       (quit (message "FreeBox: 已取消"))))
+                          ;; 展开 ~ 后再发给 vbox，Node 端不展开波浪号
+                          (dest-dir (and dest-dir (expand-file-name dest-dir)))
                           (dest-path (and dest-dir
                                           (expand-file-name
                                            (file-name-nondirectory local-file)
