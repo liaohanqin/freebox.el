@@ -143,9 +143,11 @@ each item, RET to confirm selection, comma to separate multiple items."
                       (cons display idx)))
                   video-files))
          (candidate-names (mapcar #'car candidates)))
-    (let ((chosen (completing-read-multiple
-                   "FreeBox 选择文件 (, 分隔多选): "
-                   candidate-names nil t)))
+    (let ((chosen (condition-case nil
+                      (completing-read-multiple
+                       "FreeBox 选择文件 (, 分隔多选): "
+                       candidate-names nil t)
+                    (quit (message "FreeBox: 已取消")))))
       (if (not chosen)
           (message "FreeBox: 没有选中任何文件")
         ;; Map chosen display strings back to torrent file indices
@@ -394,9 +396,11 @@ Files still downloading are marked with their progress."
                                              tag)
                                      f)))
                            all-files))
-                  (choice (completing-read
-                           "FreeBox 下载资源: "
-                           (mapcar #'car candidates) nil t)))
+                  (choice (condition-case nil
+                              (completing-read
+                               "FreeBox 下载资源: "
+                               (mapcar #'car candidates) nil t)
+                            (quit (message "FreeBox: 已取消")))))
              (when-let* ((selected (cl-find choice candidates
                                             :key #'car :test #'string=)))
                (let* ((info (cdr selected))
@@ -456,19 +460,24 @@ Files still downloading are marked with their progress."
                   ((not (file-exists-p local-file))
                    (message "FreeBox: 文件不存在 — %s" local-file))
                   (t
-                   (let* ((dest-dir (read-directory-name
-                                     (format "保存 %s 到: " name)
-                                     (or freebox-empv--last-save-dir "~/")))
-                          (dest-path (expand-file-name
-                                      (file-name-nondirectory local-file) dest-dir)))
-                     (setq freebox-empv--last-save-dir dest-dir)
-                     (freebox-empv--magnet-request
-                      "save" `((name . ,name) (dest . ,dest-dir))
-                      (lambda (err result)
-                        (if err
-                            (message "FreeBox: 保存失败 — %s" err)
-                          (message "FreeBox: 已保存到 %s"
-                                   (or (alist-get 'path result) dest-path)))))))))))))))))
+                   (let* ((dest-dir (condition-case nil
+                                        (read-directory-name
+                                         (format "保存 %s 到: " name)
+                                         (or freebox-empv--last-save-dir "~/"))
+                                      (quit (message "FreeBox: 已取消"))))
+                          (dest-path (and dest-dir
+                                          (expand-file-name
+                                           (file-name-nondirectory local-file)
+                                           dest-dir))))
+                     (when dest-dir
+                       (setq freebox-empv--last-save-dir dest-dir)
+                       (freebox-empv--magnet-request
+                        "save" `((name . ,name) (dest . ,dest-dir))
+                        (lambda (err result)
+                          (if err
+                              (message "FreeBox: 保存失败 — %s" err)
+                            (message "FreeBox: 已保存到 %s"
+                                     (or (alist-get 'path result) dest-path))))))))))))))))))
 
 (provide 'freebox-empv)
 ;;; freebox-empv.el ends here
