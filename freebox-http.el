@@ -103,7 +103,12 @@ Optional TIMEOUT overrides `freebox-http-timeout' (useful for long-poll)."
   (request (format "%s/%s" freebox-http-url endpoint)
     :type "GET"
     :params params
-    :parser 'json-read
+    ;; json-read 把 JSON false 解析为 :json-false（truthy symbol），
+    ;; 绑定 json-false=nil 使所有布尔字段归一化为 nil，避免
+    ;; `(alist-get 'complete f)` 在 cond 中误判为真。
+    :parser (lambda ()
+              (let ((json-false nil))
+                (json-read)))
     :timeout (or timeout freebox-http-timeout)
     :success (cl-function
               (lambda (&key data &allow-other-keys)

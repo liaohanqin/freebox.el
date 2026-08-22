@@ -431,7 +431,7 @@ Files still downloading are marked with their progress."
                                     (freebox-empv--play-mpv url name))
                                   (when (member new-phase '("downloading" "creating_bt_task"
                                                              "fetching_metadata"))
-                                    (freebox-empv--xunlei-start-poll new-task-id name)))))))
+                                    (freebox-empv--xunlei-start-poll new-task-id name))))))))
                      (message "FreeBox: 无法恢复 — 无 task_id")))
                   ;; Available but not yet downloaded — trigger select_file
                   ((string= phase "available")
@@ -468,7 +468,7 @@ Files still downloading are marked with their progress."
                         (if err
                             (message "FreeBox: 保存失败 — %s" err)
                           (message "FreeBox: 已保存到 %s"
-                                   (or (alist-get 'path result) dest-path))))))))))))))))))
+                                   (or (alist-get 'path result) dest-path)))))))))))))))))
 
 (provide 'freebox-empv)
 ;;; freebox-empv.el ends here
