@@ -54,6 +54,10 @@ Used by `freebox-live-open' to pop the cached buffer without refetching.")
 (defvar freebox-live--last-channel-title nil
   "Title of the last played live channel (marked with ▶ in the tree).")
 
+(defvar freebox-live--last-line-key nil
+  "Index key (\"gi/ci/li\") of the last played line, for a per-line ▶ marker.
+nil when the last playback was a single-line channel (no specific line).")
+
 ;;; --- Client selection (moved from freebox-ui.el) ------------------------------
 
 (defun freebox-live-select-client ()
@@ -251,13 +255,19 @@ not changed; otherwise fetches channels and renders."
     (when expanded
       (let ((li 0))
         (dolist (line lines)
-          (insert (propertize (format "      %s\n"
-                                      (or (freebox-ui--jget line 'title) "线路"))
-                              'face 'font-lock-comment-face
-                              'freebox-live-node
-                              (list :type 'line :gi gi :ci ci :li li
-                                    :title title :data line)))
-          (setq li (1+ li)))))))
+          (let* ((lkey (format "%d/%d/%d" gi ci li))
+                 (last-line (equal lkey freebox-live--last-line-key))
+                 (line-title (or (freebox-ui--jget line 'title) "线路")))
+            (insert (propertize (format "      %s %s\n"
+                                        (if last-line "▶" " ")
+                                        line-title)
+                                'face (if last-line
+                                          'font-lock-constant-face
+                                        'font-lock-comment-face)
+                                'freebox-live-node
+                                (list :type 'line :gi gi :ci ci :li li
+                                      :title title :data line)))
+            (setq li (1+ li))))))))
 
 ;;; --- Node helpers ----------------------------------------------------------------
 
@@ -349,6 +359,10 @@ Read at line beginning because the trailing newline carries no property."
   "Play LINE under NODE's channel title, update last-played marker, re-render."
   (let ((title (or (plist-get node :title) "?")))
     (setq freebox-live--last-channel-title title)
+    (setq freebox-live--last-line-key
+          (when (eq (plist-get node :type) 'line)
+            (format "%d/%d/%d" (plist-get node :gi)
+                    (plist-get node :ci) (plist-get node :li))))
     (freebox-live--play-line line title)
     (freebox-live--render)))
 
