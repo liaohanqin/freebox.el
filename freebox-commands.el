@@ -130,6 +130,7 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
      "Login"
      (("Q" freebox-qr-login-quark "Quark")
       ("U" freebox-qr-login-uc    "UC")
+      ("W" freebox-qr-login-uc-cookie "UC Cookie")
       ("B" freebox-qr-login-bd    "Baidu")))))
 
 ;;; --- Main entry point --------------------------------------------------------
@@ -164,6 +165,7 @@ Checks managed process first (non-blocking), then falls back to HTTP ping."
      "Login"
      (("Q" freebox-qr-login-quark "Quark")
       ("U" freebox-qr-login-uc    "UC")
+      ("W" freebox-qr-login-uc-cookie "UC Cookie")
       ("B" freebox-qr-login-bd    "Baidu"))))
   (freebox-menu/body))
 
@@ -254,7 +256,7 @@ vod detail, or episode line."
   "Show FreeBox keybinding help."
   (interactive)
   (message
-   "FreeBox: x=client  y=source  z=category  l=live-src  C=cloud-url  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  B=Baidu  q=quit"))
+   "FreeBox: x=client  y=source  z=category  l=live-src  C=cloud-url  b=browse  s=search  v=resume  o=open-url  L=live  S=save  r=start  K=stop  Q=Quark  U=UC  W=UC-Cookie  B=Baidu  q=quit"))
 
 ;;;###autoload
 (defun freebox-qr-login-quark ()
@@ -277,6 +279,18 @@ vod detail, or episode line."
       "uc" nil nil
       (lambda ()
         (message "FreeBox: UC login done! Please replay the video"))))))
+
+;;;###autoload
+(defun freebox-qr-login-uc-cookie ()
+  "Start QR code login for UC cloud drive (web cookie).
+播放链需要 cookie 做网盘操作（保存分享/取下载地址），token 扫码不足。"
+  (interactive)
+  (freebox-http-ensure-server
+   (lambda ()
+     (freebox-ui--start-qr-login
+      "uc-cookie" nil nil
+      (lambda ()
+        (message "FreeBox: UC cookie login done! Please replay the video"))))))
 
 ;;;###autoload
 (defun freebox-qr-login-bd ()

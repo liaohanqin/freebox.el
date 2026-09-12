@@ -415,7 +415,9 @@ repeated failure just prints a message instead of prompting again
                                   (freebox-vod--login-type-name login-type)))
             (setf (plist-get flag-plist :qr-retried) t)
             (freebox-ui--start-qr-login
-             login-type flag share-link
+             ;; UC 播放需要 cookie 做网盘操作，token 扫码不足
+             (if (string= login-type "uc") "uc-cookie" login-type)
+             flag share-link
              (lambda () (freebox-vod--retry-flag-after-login vod flag)))))
       (message "FreeBox: [%s] %s" flag (or err-msg "解析失败，请检查网盘配置")))))
 

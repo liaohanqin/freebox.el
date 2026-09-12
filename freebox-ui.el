@@ -488,6 +488,11 @@ preventing an endless retry loop when the drive is still misconfigured."
   (freebox-ui--loading (format "resolving URL for \"%s\"" title))
   (freebox-http-get-play-url source-key play-flag episode-url freebox-ui-current-client-id
     (lambda (err pdata)
+      ;; 剧集 id（fileId++fileToken++shareId++stoken）等内部标识不是可播 URL，
+      ;; 不能当 direct-url 交给 mpv（否则显示 playing 但实际播不了）
+      (when (and (stringp direct-url)
+                 (not (string-match-p "\\`\\(?:https?\\|magnet\\):" direct-url)))
+        (setq direct-url nil))
       (if err
           (if direct-url
               (progn (message "FreeBox: playing \"%s\" (direct)" title)
@@ -495,6 +500,7 @@ preventing an endless retry loop when the drive is still misconfigured."
             (freebox-ui--error err))
         (let* ((nvp       (freebox-ui--jget pdata 'nameValuePairs))
                (final-url (freebox-ui--jget nvp 'url))
+               (api-msg   (freebox-ui--jget nvp 'msg))
                (url (if (and final-url (stringp final-url)
                              (not (string-empty-p final-url)))
                         final-url
@@ -515,7 +521,9 @@ preventing an endless retry loop when the drive is still misconfigured."
                                          ("bd" "百度网盘")
                                          (_ login-type))))
                           (freebox-ui--start-qr-login
-                           login-type play-flag nil
+                           ;; UC 播放失败多为 cookie 失效（token 只影响原画取流）
+                           (if (string= login-type "uc") "uc-cookie" login-type)
+                           play-flag nil
                            (lambda ()
                              (freebox-ui--resolve-and-play
                               source-key play-flag episode-url direct-url title t))))
@@ -527,10 +535,15 @@ preventing an endless retry loop when the drive is still misconfigured."
                                    ("uc" "UC")
                                    ("bd" "百度")
                                    (_ login-type))
-                                 (upcase (substring login-type 0 1))))))
+                                 (if (string= login-type "uc")
+                                     "W"
+                                   (upcase (substring login-type 0 1)))))))
                 (progn (message "FreeBox: playing \"%s\"" title)
                        (freebox-empv-play-url url title)))
-            (message "FreeBox: could not resolve URL for \"%s\"." title)))))))
+            (message "FreeBox: could not resolve URL for \"%s\"%s" title
+                     (if (and api-msg (stringp api-msg) (not (string-empty-p api-msg)))
+                         (format " - %s" api-msg)
+                       "."))))))))
 
 (defun freebox-ui--error-url-p (url)
   "Return non-nil if URL is an error placeholder returned by the spider.
@@ -602,6 +615,7 @@ generate a PNG from the jump URL (for quark) and display it."
       (insert (format "请用 %s App 扫描以下二维码登录:\n\n"
                       (pcase drive-type
                         ("quark" "夸克网盘") ("uc" "UC网盘")
+                        ("uc-cookie" "UC浏览器")
                         ("bd" "百度网盘") (_ (upcase drive-type)))))
       (insert-button qr-url
                      'action (lambda (_) (browse-url qr-url))
@@ -623,6 +637,7 @@ RETRY-FN is called after successful login."
       (insert (format "请用 %s App 扫描二维码登录:\n\n"
                       (pcase drive-type
                         ("quark" "夸克网盘") ("uc" "UC网盘")
+                        ("uc-cookie" "UC浏览器")
                         ("bd" "百度网盘") (_ (upcase drive-type)))))
       (condition-case nil
           (let ((img (create-image path nil nil :max-width 400 :max-height 400 :ascent 'center)))
@@ -633,6 +648,7 @@ RETRY-FN is called after successful login."
   (message "FreeBox: %s 二维码已显示，请用手机 App 扫码"
            (pcase drive-type
              ("quark" "夸克网盘") ("uc" "UC网盘")
+             ("uc-cookie" "UC浏览器")
              ("bd" "百度网盘") (_ (upcase drive-type))))
   (freebox-ui--poll-qr-status drive-type token retry-fn))
 
@@ -700,7 +716,10 @@ If login succeeded, cancel timer and retry resolve."
         (freebox-ui--cancel-qr-poll)
         (message "FreeBox: %s 二维码已过期，请重新操作" drive-type))
        ((string= status "pending")
-        (message "FreeBox: 等待 %s App 扫码..." drive-type))
+        (message "FreeBox: 等待 %s App 扫码..."
+                 (pcase drive-type
+                   ("uc-cookie" "UC浏览器")
+                   (_ drive-type))))
        (t
         (message "FreeBox: %s 扫码状态: %s" drive-type (or status "unknown")))))))
 
