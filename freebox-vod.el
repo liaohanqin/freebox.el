@@ -702,7 +702,9 @@ Return a list of load thunks."
         (insert (propertize "          加载中…\n" 'face 'shadow)))
        ((eq state 'error)
         (insert (propertize "          解析失败，按 RET 重试\n"
-                            'face 'font-lock-warning-face)))
+                            'face 'font-lock-warning-face
+                            'freebox-vod-node
+                            (list :type 'flag :key key :data flag-plist :vod vod))))
        (t
         (let ((last-key (and freebox-vod--last-played
                              (plist-get freebox-vod--last-played :ep-key))))
@@ -750,7 +752,8 @@ Return a list of load thunks."
 
 (defun freebox-vod-activate ()
   "RET: play an episode, page a category, or toggle an expandable node.
-Re-expanding an error-state flag node retries loading its episodes."
+RET on an error-state flag node (or its \"解析失败\" hint line) retries
+loading its episodes instead of folding."
   (interactive)
   (let ((node (freebox-vod--node-at-point)))
     (if (not node)
@@ -762,17 +765,20 @@ Re-expanding an error-state flag node retries loading its episodes."
          (freebox-vod--load-more (plist-get node :data)))
         (_
          (let* ((key (plist-get node :key))
+                (data (plist-get node :data))
                 (expanded (gethash key freebox-vod--expanded)))
-           (if expanded
-               ;; 已展开：折叠
-               (puthash key nil freebox-vod--expanded)
-             ;; 未展开：展开；flag 处于 error 状态时顺带重试加载
-             (puthash key t freebox-vod--expanded)
-             (when (and (eq (plist-get node :type) 'flag)
-                        (eq (plist-get (plist-get node :data) :state) 'error))
-               (let ((flag-plist (plist-get node :data)))
-                 (setf (plist-get flag-plist :state) 'unloaded)
-                 (freebox-vod--ensure-flag-loaded (plist-get node :vod) flag-plist)))))
+           (if (and (eq (plist-get node :type) 'flag)
+                    (eq (plist-get data :state) 'error))
+               ;; 解析失败：RET 直接重试（保持展开）
+               (progn
+                 (puthash key t freebox-vod--expanded)
+                 (setf (plist-get data :state) 'unloaded)
+                 (freebox-vod--ensure-flag-loaded (plist-get node :vod) data))
+             (if expanded
+                 ;; 已展开：折叠
+                 (puthash key nil freebox-vod--expanded)
+               ;; 未展开：展开
+               (puthash key t freebox-vod--expanded))))
          (freebox-vod--render))))))
 
 (defun freebox-vod-toggle ()
