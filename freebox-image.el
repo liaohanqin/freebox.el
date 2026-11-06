@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'url)
+(require 'cl-lib)
 
 ;;; --- Customization -----------------------------------------------------------
 
@@ -78,46 +79,65 @@
 
 ;;; --- Async image download ----------------------------------------------------
 
+(defvar freebox-image--inflight nil
+  "Alist of (URL . CALLBACKS) for downloads currently in progress.
+Prevents re-rendering the gallery from starting a second download of a
+URL that is already being fetched.")
+
 (defun freebox-image-get (url callback)
   "Asynchronously fetch the image at URL, cache it, call CALLBACK with path.
 CALLBACK is called with (PATH-OR-NIL).  PATH is the local cache file on
 success, nil on failure.  If a fresh cache exists, CALLBACK is called
-immediately with the cached path."
+immediately with the cached path.  If the same URL is already being
+downloaded, CALLBACK is queued and run when that download finishes."
   (freebox-image--ensure-cache-dir)
   (let ((cache-path (freebox-image--cache-path url)))
-    (if (freebox-image--cache-fresh-p cache-path)
-        (funcall callback cache-path)
-      ;; Async download
+    (cond
+     ((freebox-image--cache-fresh-p cache-path)
+      (funcall callback cache-path))
+     ((assoc url freebox-image--inflight)
+      (setf (alist-get url freebox-image--inflight)
+            (append (alist-get url freebox-image--inflight) (list callback))))
+     (t
+      (push (cons url (list callback)) freebox-image--inflight)
       (let ((url-request-extra-headers
              '(("User-Agent" . "Mozilla/5.0 (X11; Linux x86_64) Emacs"))))
-        (condition-case _err
-            (url-retrieve
-             url
-             (lambda (status _cb-url cb-path cb-callback)
-               (if (or (plist-get status :error)
-                       (not (buffer-live-p (current-buffer))))
-                   (funcall cb-callback nil)
-                 (condition-case nil
-                     (progn
-                       ;; Skip HTTP headers
-                       (goto-char (point-min))
-                       (when (re-search-forward "\r?\n\r?\n" nil t)
-                         (let ((data (buffer-substring-no-properties
-                                      (point) (point-max))))
-                           (if (< (length data) 100)
-                               ;; Too small, likely an error page
-                               (funcall cb-callback nil)
-                             (with-temp-file cb-path
-                               (set-buffer-multibyte nil)
-                               (insert data))
-                             (funcall cb-callback cb-path)))))
-                   (error (funcall cb-callback nil))))
-               (when (buffer-live-p (current-buffer))
-                 (kill-buffer (current-buffer))))
-             (list url cache-path callback)
-             t  ; silent
-             t) ; inhibit cookies
-          (error (funcall callback nil)))))))
+        (cl-labels
+            ((finish (path)
+               (let ((cbs (alist-get url freebox-image--inflight)))
+                 (setq freebox-image--inflight
+                       (assq-delete-all url freebox-image--inflight))
+                 (dolist (cb cbs) (funcall cb path)))))
+          (condition-case _err
+              (url-retrieve
+               url
+               (lambda (status _cb-url cb-path _cb-callback)
+                 (let ((path
+                        (if (or (plist-get status :error)
+                                (not (buffer-live-p (current-buffer))))
+                            nil
+                          (condition-case nil
+                              (progn
+                                ;; Skip HTTP headers
+                                (goto-char (point-min))
+                                (when (re-search-forward "\r?\n\r?\n" nil t)
+                                  (let ((data (buffer-substring-no-properties
+                                               (point) (point-max))))
+                                    (if (< (length data) 100)
+                                        ;; Too small, likely an error page
+                                        nil
+                                      (with-temp-file cb-path
+                                        (set-buffer-multibyte nil)
+                                        (insert data))
+                                      cb-path))))
+                            (error nil)))))
+                   (when (buffer-live-p (current-buffer))
+                     (kill-buffer (current-buffer)))
+                   (finish path)))
+               (list url cache-path nil)
+               t  ; silent
+               t) ; inhibit cookies
+            (error (finish nil)))))))))
 
 ;;; --- Poster preview buffer ---------------------------------------------------
 
@@ -333,6 +353,31 @@ is not the current buffer (e.g. after C-x 4 b)."
   :type 'integer
   :group 'freebox-image)
 
+(defcustom freebox-gallery-selection-scale 1.45
+  "Scale factor applied to the poster of the selected gallery cell.
+The selected poster is drawn this much larger than the other
+thumbnails, so the current cell stands out like a dock icon."
+  :type 'number
+  :group 'freebox-image)
+
+(defface freebox-gallery-selection
+  '((((background dark)) :box (:line-width 3 :color "#79b8ff"))
+    (t :box (:line-width 3 :color "#2f6fdd")))
+  "Face for the poster frame of the selected gallery cell."
+  :group 'freebox-image)
+
+(defface freebox-gallery-selection-label
+  '((((background dark)) :background "#79b8ff" :foreground "black" :weight bold)
+    (t :background "#2f6fdd" :foreground "white" :weight bold))
+  "Face for the name of the selected gallery cell."
+  :group 'freebox-image)
+
+(defface freebox-gallery-missing-poster
+  '((((background dark)) :background "#3a3a3a" :foreground "#8a8a8a")
+    (t :background "#e8e8e8" :foreground "#7a7a7a"))
+  "Face for the placeholder shown when a poster cannot be loaded."
+  :group 'freebox-image)
+
 (defvar-local freebox-image--gallery-source-key nil)
 (defvar-local freebox-image--gallery-tid nil)
 (defvar-local freebox-image--gallery-cat-name nil)
@@ -342,6 +387,8 @@ is not the current buffer (e.g. after C-x 4 b)."
   "Items data for current gallery page, used for refit on window resize.")
 (defvar-local freebox-image--gallery-last-width nil
   "Last known window pixel width, to avoid redundant refit.")
+(defvar-local freebox-image--gallery-selected nil
+  "VOD id of the poster currently selected in the gallery.")
 
 (declare-function freebox-ui-show-detail "freebox-ui")
 (declare-function freebox-ui--category-page "freebox-ui")
@@ -359,6 +406,7 @@ is not the current buffer (e.g. after C-x 4 b)."
     (define-key map (kbd "<backtab>") #'freebox-gallery-left)
     (define-key map (kbd "n")         #'freebox-gallery-next-page)
     (define-key map (kbd "p")         #'freebox-gallery-prev-page)
+    (define-key map (kbd "r")         #'freebox-gallery-reload-poster)
     (define-key map (kbd "v")         #'freebox-gallery-goto-vod-list)
     map)
   "Keymap for `freebox-gallery-mode'.")
@@ -373,47 +421,77 @@ is not the current buffer (e.g. after C-x 4 b)."
 \\[freebox-gallery-down] - Next row
 \\[freebox-gallery-next-page] - Next page
 \\[freebox-gallery-prev-page] - Previous page
+\\[freebox-gallery-reload-poster] - Reload the poster at point
 \\[quit-window] - Close gallery"
   :group 'freebox-image
-  (setq-local cursor-type 'box)
-  (setq-local truncate-lines t))
+  (setq-local cursor-type nil)
+  (setq-local truncate-lines t)
+  (add-hook 'post-command-hook #'freebox-gallery--sync-selection nil t))
 
-(defun freebox-image--gallery-rerender ()
-  "Re-render the gallery using saved items and current window width."
-  (let ((items freebox-image--gallery-items)
-        (cat-name freebox-image--gallery-cat-name)
-        (page freebox-image--gallery-page)
-        (pagecount freebox-image--gallery-pagecount)
-        (source-key freebox-image--gallery-source-key)
-        (tid freebox-image--gallery-tid)
-        (buf (current-buffer))
-        (inhibit-read-only t))
-    (erase-buffer)
-    ;; Title
-    (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
-                                cat-name page pagecount (length items))
-                        'face '(:weight bold :height 1.2)))
-    ;; Calculate columns
-    (let* ((cell-px (+ freebox-image-thumbnail-width 16))
-           (win-px (or (and (get-buffer-window buf)
-                            (window-body-width (get-buffer-window buf) t))
-                       800))
-           (cols (max 1 (floor (/ (float win-px) cell-px))))
-           (col-idx 0)
-           (row-items nil)
-           (all-pending nil))
-      (dolist (v items)
-        (push (cons col-idx v) row-items)
-        (cl-incf col-idx)
-        (when (= col-idx cols)
-          (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
-                all-pending)
-          (setq row-items nil col-idx 0)))
-      (when row-items
-        (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
-              all-pending))
-      ;; Async refresh for uncached posters
-      (dolist (p (apply #'nconc (nreverse all-pending)))
+(defun freebox-image--gallery-layout (items win-px selected)
+  "Lay ITEMS out into rows for a text area WIN-PX pixels wide.
+SELECTED is the VOD id drawn enlarged.  Returns a list of rows,
+each a list of (OFFSET ITEM SELECTED-P CELL-PX) in display order."
+  (let* ((base-w freebox-image-thumbnail-width)
+         (sel-w (round (* base-w freebox-gallery-selection-scale)))
+         (base-cell (+ base-w 16))
+         (sel-cell (+ sel-w 16))
+         (rows nil)
+         (row nil)
+         (used 0)
+         (off 0))
+    (dolist (v items)
+      (let* ((id (freebox-ui--jget v 'id))
+             (selp (and selected (equal id selected)))
+             (cell (if selp sel-cell base-cell)))
+        (when (and row (> (+ used cell) win-px))
+          (push (nreverse row) rows)
+          (setq row nil used 0 off 0))
+        (push (list off v selp cell) row)
+        (cl-incf used cell)
+        (cl-incf off cell)))
+    (when row (push (nreverse row) rows))
+    (nreverse rows)))
+
+(defun freebox-image--gallery-render (buf)
+  "Render the gallery in BUF from its buffer-local state.
+Point is left on the selected poster when there is one."
+  (with-current-buffer buf
+    (let ((items freebox-image--gallery-items)
+          (cat-name freebox-image--gallery-cat-name)
+          (page freebox-image--gallery-page)
+          (pagecount freebox-image--gallery-pagecount)
+          (selected freebox-image--gallery-selected)
+          (inhibit-read-only t)
+          (pending nil))
+      (erase-buffer)
+      ;; Title
+      (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
+                                  cat-name page pagecount (length items))
+                          'face '(:weight bold :height 1.2)))
+      ;; Grid
+      (let* ((win (get-buffer-window buf))
+             (win-px (or (and win (window-body-width win t)) 800)))
+        (dolist (row (freebox-image--gallery-layout items win-px selected))
+          (setq pending (nconc pending
+                               (freebox-image--gallery-insert-row row))))
+        (setq freebox-image--gallery-last-width win-px))
+      ;; Footer
+      (insert "\n"
+              (propertize (make-string 50 ?─) 'face 'shadow)
+              "\n"
+              (propertize "[RET] 查看详情  [h/j/k/l] 导航  [n/p] 翻页  [r] 重载海报  [v] 列表  [q] 返回"
+                          'face 'font-lock-comment-face)
+              "\n")
+      ;; Put point back on the selected poster
+      (let ((pos (and selected (freebox-image--gallery-pos-of selected))))
+        (if pos
+            (goto-char pos)
+          (goto-char (point-min))
+          (let ((first (next-single-property-change (point) 'freebox-vod-id)))
+            (when first (goto-char first)))))
+      ;; Async refresh: download uncached posters and replace placeholders
+      (dolist (p pending)
         (pcase-let ((`(,pic-url ,marker ,vod-id) p))
           (freebox-image-get
            pic-url
@@ -421,18 +499,51 @@ is not the current buffer (e.g. after C-x 4 b)."
              (when (and path (buffer-live-p buf)
                         (marker-position marker))
                (freebox-image--gallery-replace-placeholder
-                buf marker path vod-id)))))))
-    ;; Footer
-    (insert "\n"
-            (propertize (make-string 50 ?─) 'face 'shadow)
-            "\n"
-            (propertize "[RET] 查看详情  [h/j/k/l] 导航  [n/p] 翻页  [v] 列表  [q] 返回"
-                        'face 'font-lock-comment-face)
-            "\n")
-    ;; Move to first poster
-    (goto-char (point-min))
-    (let ((first (next-single-property-change (point) 'freebox-vod-id)))
-      (when first (goto-char first)))))
+                buf marker path vod-id)))))))))
+
+(defun freebox-image--gallery-pos-of (vod-id)
+  "Return the buffer position of the poster cell for VOD-ID, or nil."
+  (let ((pos (point-min))
+        (found nil))
+    (save-excursion
+      (while (and (not found)
+                  (setq pos (next-single-property-change pos 'freebox-vod-id)))
+        (when (equal (get-text-property pos 'freebox-vod-id) vod-id)
+          (setq found pos))))
+    found))
+
+(defun freebox-image--gallery-rerender ()
+  "Re-render the gallery using saved items and current window width."
+  (freebox-image--gallery-render (current-buffer)))
+
+(defun freebox-gallery--sync-selection ()
+  "Re-render when point moved to a different poster."
+  (let ((id (get-text-property (point) 'freebox-vod-id)))
+    (when (and id (not (equal id freebox-image--gallery-selected)))
+      (setq freebox-image--gallery-selected id)
+      (freebox-image--gallery-render (current-buffer)))))
+
+(defun freebox-gallery-reload-poster ()
+  "Discard the cached poster at point and fetch it again.
+Useful when a poster failed to download; failures are usually caused
+by the upstream image host, so a reload only helps for transient errors."
+  (interactive)
+  (let* ((id (get-text-property (point) 'freebox-vod-id))
+         (item (and id
+                    (cl-find-if (lambda (v)
+                                  (equal (freebox-ui--jget v 'id) id))
+                                freebox-image--gallery-items)))
+         (pic (and item (freebox-ui--jget item 'pic))))
+    (cond
+     ((not id) (message "FreeBox: no poster at point."))
+     ((not (and pic (stringp pic) (not (string-empty-p pic))))
+      (message "FreeBox: this item has no poster URL."))
+     (t
+      (let ((cache (freebox-image--cache-path pic)))
+        (when (file-exists-p cache) (delete-file cache)))
+      (message "FreeBox: reloading poster...")
+      (freebox-image--gallery-render (current-buffer))))))
+
 
 (defun freebox-gallery-next ()
   "Move to the next poster in the gallery."
@@ -636,7 +747,8 @@ Returns the line-beginning-position of that row, or nil."
 CAT-NAME, PAGE, PAGECOUNT describe the current category page.
 SOURCE-KEY and TID are saved for context.
 Thumbnails are arranged in a grid, with multiple posters per row.
-Each cell shows the poster above its truncated title."
+Each cell shows the poster above its title.  The selected cell is
+enlarged and its title is shown in full, wrapping if necessary."
   ;; Dismiss hydra if active, so its keybindings don't shadow gallery keys
   (when (bound-and-true-p hydra-curr-map)
     (hydra-keyboard-quit))
@@ -644,64 +756,16 @@ Each cell shows the poster above its truncated title."
     ;; Display buffer FIRST so window-body-width is accurate for column calculation
     (pop-to-buffer buf '((display-buffer-same-window)))
     (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (freebox-gallery-mode)
-        (setq freebox-image--gallery-source-key source-key
-              freebox-image--gallery-tid tid
-              freebox-image--gallery-cat-name cat-name
-              freebox-image--gallery-page page
-              freebox-image--gallery-pagecount pagecount
-              freebox-image--gallery-items items)
-        ;; Title
-        (insert (propertize (format "%s p.%d/%d (%d items)\n\n"
-                                    cat-name page pagecount (length items))
-                            'face '(:weight bold :height 1.2)))
-        ;; Calculate columns per row (window is now visible, width is accurate)
-        ;; Build grid rows and collect pending (uncached) items
-        (let* ((cell-px (+ freebox-image-thumbnail-width 16))
-               (win-px (or (and (get-buffer-window buf)
-                                (window-body-width (get-buffer-window buf) t))
-                           800))
-               (cols (max 1 (floor (/ (float win-px) cell-px))))
-               (col-idx 0)
-               (row-items nil)
-               (all-pending nil))
-          (dolist (v items)
-            (push (cons col-idx v) row-items)
-            (cl-incf col-idx)
-            (when (= col-idx cols)
-              (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
-                    all-pending)
-              (setq row-items nil col-idx 0)))
-          (when row-items
-            (push (freebox-image--gallery-insert-row buf (nreverse row-items) cell-px)
-                  all-pending))
-          ;; Async refresh: download uncached posters and replace placeholders
-          (dolist (p (apply #'nconc (nreverse all-pending)))
-            (pcase-let ((`(,pic-url ,marker ,vod-id) p))
-              (freebox-image-get
-               pic-url
-               (lambda (path)
-                 (when (and path (buffer-live-p buf)
-                            (marker-position marker))
-                   (freebox-image--gallery-replace-placeholder
-                    buf marker path vod-id)))))))
-        ;; Footer
-        (insert "\n"
-                (propertize (make-string 50 ?─) 'face 'shadow)
-                "\n"
-                (propertize "[RET] 查看详情  [h/j/k/l] 导航  [n/p] 翻页  [v] 列表  [q] 返回"
-                            'face 'font-lock-comment-face)
-                "\n")
-        ;; Move to first poster
-        (goto-char (point-min))
-        (let ((first (next-single-property-change (point) 'freebox-vod-id)))
-          (when first (goto-char first)))
-        ;; Record initial width for refit comparison
-        (setq freebox-image--gallery-last-width
-              (and (get-buffer-window buf)
-                   (window-body-width (get-buffer-window buf) t)))))))
+      (freebox-gallery-mode)
+      (setq freebox-image--gallery-source-key source-key
+            freebox-image--gallery-tid tid
+            freebox-image--gallery-cat-name cat-name
+            freebox-image--gallery-page page
+            freebox-image--gallery-pagecount pagecount
+            freebox-image--gallery-items items
+            freebox-image--gallery-selected
+            (and items (freebox-ui--jget (car items) 'id)))
+      (freebox-image--gallery-render buf))))
 
 (defun freebox-image--gallery-replace-placeholder (buf marker path vod-id)
   "Replace the [no image] placeholder at MARKER in BUF with thumbnail at PATH.
@@ -731,56 +795,82 @@ VOD-ID is set as the `freebox-vod-id' text property on the inserted image."
             (with-selected-window win
               (redisplay t))))))))
 
-(defun freebox-image--gallery-insert-row (_buf indexed-items cell-px)
+(defun freebox-image--gallery-insert-row (entries)
   "Insert one grid row: poster line then name line, pixel-aligned.
-INDEXED-ITEMS is a list of (IDX . VOD-ALIST) conses.
-CELL-PX is the cell width in pixels.
-Images are inserted synchronously from cache; uncached items show text.
-Returns a list of (PIC-URL MARKER VOD-ID) for uncached items."
-  (let ((name-chars (max 6 (/ (- cell-px 16) 8)))
-        (col 0)
-        (pending nil))
+ENTRIES is a list of (OFFSET ITEM SELECTED-P CELL-PX), as produced by
+`freebox-image--gallery-layout'.  The selected cell is drawn enlarged,
+framed, and its name is wrapped so the full title is visible.
+Images are inserted synchronously from cache; uncached items show a
+placeholder.  Returns a list of (PIC-URL MARKER VOD-ID) for uncached
+items."
+  (let ((pending nil))
     ;; Poster line
-    (dolist (entry indexed-items)
-      (let* ((v      (cdr entry))
-             (vod-id (freebox-ui--jget v 'id))
-             (pic    (freebox-ui--jget v 'pic))
-             (px-offset (* col cell-px))
-             (cache-path (and pic (stringp pic) (not (string-empty-p pic))
-                              (freebox-image--cache-path pic)))
-             (cached (and cache-path (freebox-image--cache-fresh-p cache-path))))
-        ;; Pixel-align to column
-        (when (> col 0)
-          (insert (propertize " " 'display `(space :align-to (,px-offset)))))
-        (let ((start (point)))
-          (if cached
-              ;; Insert image directly from cache
-              (condition-case nil
-                  (let ((img (create-image cache-path nil nil
-                                           :max-width freebox-image-thumbnail-width
-                                           :max-height freebox-image-thumbnail-height
-                                           :ascent 'center)))
-                    (insert-image img "[poster]"))
-                (error (insert "[no image]")))
-            ;; No cache: show text placeholder, record for async refresh
-            (insert (propertize "[no image]" 'face 'shadow))
-            (when pic
-              (push (list pic (copy-marker start) vod-id) pending)))
-          (put-text-property start (point) 'freebox-vod-id vod-id)))
-      (cl-incf col))
+    (dolist (entry entries)
+      (pcase-let ((`(,off ,v ,selp ,cell-px) entry))
+        (let* ((vod-id (freebox-ui--jget v 'id))
+               (pic    (freebox-ui--jget v 'pic))
+               (cache-path (and pic (stringp pic) (not (string-empty-p pic))
+                                (freebox-image--cache-path pic)))
+               (cached (and cache-path (freebox-image--cache-fresh-p cache-path)))
+               (max-w (if selp
+                          (round (* freebox-image-thumbnail-width
+                                    freebox-gallery-selection-scale))
+                        freebox-image-thumbnail-width))
+               (max-h (if selp
+                          (round (* freebox-image-thumbnail-height
+                                    freebox-gallery-selection-scale))
+                        freebox-image-thumbnail-height)))
+          (when (> off 0)
+            (insert (propertize " " 'display `(space :align-to (,off)))))
+          (let ((start (point)))
+            (if cached
+                (condition-case nil
+                    (let ((img (create-image cache-path nil nil
+                                             :max-width max-w
+                                             :max-height max-h
+                                             :ascent 'center)))
+                      (insert-image img "[poster]"))
+                  (error (insert (propertize "[no image]"
+                                             'face 'freebox-gallery-missing-poster))))
+              ;; No cache: show placeholder, record for async refresh
+              (insert (propertize
+                       (truncate-string-to-width
+                        (or (freebox-ui--jget v 'name) "?")
+                        (max 4 (/ cell-px 8)) nil nil "..")
+                       'face 'freebox-gallery-missing-poster
+                       'help-echo "海报加载失败，按 r 重试"))
+              (when pic
+                (push (list pic (copy-marker start) vod-id) pending)))
+            (put-text-property start (point) 'freebox-vod-id vod-id)
+            (when selp
+              (let ((ov (make-overlay start (point))))
+                (overlay-put ov 'face 'freebox-gallery-selection)))))))
     (insert "\n")
-    ;; Name line (pixel-aligned under each poster)
-    (setq col 0)
-    (dolist (entry indexed-items)
-      (let* ((v (cdr entry))
-             (name (or (freebox-ui--jget v 'name) "?"))
-             (label (truncate-string-to-width name name-chars nil nil ".."))
-             (px-offset (* col cell-px)))
-        (when (> col 0)
-          (insert (propertize " " 'display `(space :align-to (,px-offset)))))
-        (insert (propertize label 'face 'font-lock-keyword-face)))
-      (cl-incf col))
-    (insert "\n\n")
+    ;; Name line (pixel-aligned under each poster).  The selected cell
+    ;; gets the wider budget of its enlarged cell so its title usually
+    ;; fits without truncation.
+    (let ((overflow nil))
+      (dolist (entry entries)
+        (pcase-let ((`(,off ,v ,selp ,cell-px) entry))
+          (let* ((name (or (freebox-ui--jget v 'name) "?"))
+                 (budget (max 6 (/ (- cell-px 16) 8)))
+                 (label (truncate-string-to-width name budget nil nil "..")))
+            (when (> off 0)
+              (insert (propertize " " 'display `(space :align-to (,off)))))
+            (if selp
+                (progn
+                  (insert (propertize label 'face 'freebox-gallery-selection-label))
+                  (when (string-match-p "\\.\\.\\'" label)
+                    (setq overflow name)))
+              (insert (propertize label 'face 'font-lock-keyword-face))))))
+      (insert "\n")
+      ;; Long selected title: show it in full on its own wrapped line.
+      (when overflow
+        (let ((start (point)))
+          (insert (propertize overflow 'face 'freebox-gallery-selection-label))
+          (fill-region start (point) nil nil t)
+          (insert "\n"))))
+    (insert "\n")
     pending))
 
 ;;; --- Global window-size-change hook ------------------------------------------
